@@ -297,6 +297,17 @@ func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool
 		// Update config
 		app.cfg.Provider = newProvider
 
+		// Update available models based on new provider
+		if err := app.cfg.Validate(); err != nil {
+			display.ShowError(fmt.Sprintf("Configuration error: %v", err))
+			return false
+		}
+
+		// Reset to first available model for the new provider
+		if len(app.cfg.AvailableModels) > 0 {
+			app.cfg.Model = app.cfg.AvailableModels[0]
+		}
+
 		// Recreate client with new provider
 		newClient, err := api.NewClient(app.cfg)
 		if err != nil {
@@ -305,12 +316,6 @@ func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool
 		}
 
 		*client = newClient
-
-		// Update available models based on new provider
-		if err := app.cfg.Validate(); err != nil {
-			display.ShowError(fmt.Sprintf("Configuration error: %v", err))
-			return false
-		}
 
 		fmt.Printf("✓ Switched to %s\n", app.getProviderName())
 		fmt.Printf("  Model: %s\n", app.cfg.Model)
