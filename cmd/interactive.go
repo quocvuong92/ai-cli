@@ -297,15 +297,13 @@ func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool
 		// Update config
 		app.cfg.Provider = newProvider
 
+		// Reset model to empty so Validate() will set it to the first available model
+		app.cfg.Model = ""
+
 		// Update available models based on new provider
 		if err := app.cfg.Validate(); err != nil {
 			display.ShowError(fmt.Sprintf("Configuration error: %v", err))
 			return false
-		}
-
-		// Reset to first available model for the new provider
-		if len(app.cfg.AvailableModels) > 0 {
-			app.cfg.Model = app.cfg.AvailableModels[0]
 		}
 
 		// Recreate client with new provider
