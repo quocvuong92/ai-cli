@@ -50,6 +50,9 @@ func (s *InteractiveSession) completer(d prompt.Document) ([]prompt.Suggest, ist
 		{Text: "/web linkup", Description: "Use Linkup search provider"},
 		{Text: "/web brave", Description: "Use Brave search provider"},
 		{Text: "/model", Description: "Show/switch model"},
+		{Text: "/provider", Description: "Show/switch provider (copilot/azure)"},
+		{Text: "/provider copilot", Description: "Switch to GitHub Copilot"},
+		{Text: "/provider azure", Description: "Switch to Azure OpenAI"},
 		{Text: "/allow-dangerous", Description: "Enable dangerous commands (with confirmation)"},
 		{Text: "/show-permissions", Description: "Show command execution permissions"},
 	}
@@ -141,7 +144,7 @@ func (s *InteractiveSession) executor(input string) {
 
 	// Handle commands
 	if strings.HasPrefix(input, "/") {
-		if s.app.handleCommand(input, &s.messages, s.client, s.exec) {
+		if s.app.handleCommand(input, &s.messages, &s.client, s.exec) {
 			s.exitFlag = true
 		}
 		return
@@ -190,7 +193,7 @@ func (app *App) getProviderName() string {
 	return "Unknown"
 }
 
-func (app *App) handleCommand(input string, messages *[]api.Message, client api.AIClient, exec *executor.Executor) bool {
+func (app *App) handleCommand(input string, messages *[]api.Message, client *api.AIClient, exec *executor.Executor) bool {
 	parts := strings.SplitN(input, " ", 2)
 	cmd := strings.ToLower(parts[0])
 
@@ -215,6 +218,8 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client api.
 		fmt.Printf("  %-24s %s\n", "/web <provider>", "Switch provider (tavily, linkup, brave)")
 		fmt.Printf("  %-24s %s\n", "/model <name>", "Switch model")
 		fmt.Printf("  %-24s %s\n", "/model", "Show current model")
+		fmt.Printf("  %-24s %s\n", "/provider <name>", "Switch AI provider (copilot, azure)")
+		fmt.Printf("  %-24s %s\n", "/provider", "Show current provider")
 		fmt.Printf("  %-24s %s\n", "/allow-dangerous", "Allow dangerous commands (with confirmation)")
 		fmt.Printf("  %-24s %s\n", "/show-permissions", "Show command execution permissions")
 		fmt.Printf("  %-24s %s\n", "/help, /h", "Show this help")
@@ -223,8 +228,16 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client api.
 	case "/model":
 		app.handleModelCommand(parts)
 
+	case "/provider":
+		if app.handleProviderCommand(parts, client) {
+			// Provider switched, clear conversation history
+			*messages = []api.Message{
+				{Role: "system", Content: config.DefaultSystemMessage},
+			}
+		}
+
 	case "/web":
-		app.handleWebCommand(parts, messages, client, exec)
+		app.handleWebCommand(parts, messages, *client, exec)
 
 	case "/allow-dangerous":
 		exec.GetPermissionManager().EnableDangerous()
@@ -263,6 +276,51 @@ func (app *App) handleModelCommand(parts []string) {
 		if len(app.cfg.AvailableModels) > 0 {
 			fmt.Printf("Available: %s\n", app.cfg.GetAvailableModelsString())
 		}
+	}
+}
+
+func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool {
+	if len(parts) > 1 {
+		newProvider := strings.ToLower(strings.TrimSpace(parts[1]))
+		if newProvider == "" {
+			fmt.Printf("Current provider: %s\n", app.getProviderName())
+			fmt.Println("Available: copilot, azure")
+			return false
+		}
+
+		if newProvider != "copilot" && newProvider != "azure" && newProvider != "github" {
+			fmt.Printf("Invalid provider: %s\n", newProvider)
+			fmt.Println("Available: copilot, azure")
+			return false
+		}
+
+		// Update config
+		app.cfg.Provider = newProvider
+
+		// Recreate client with new provider
+		newClient, err := api.NewClient(app.cfg)
+		if err != nil {
+			display.ShowError(fmt.Sprintf("Failed to switch provider: %v", err))
+			return false
+		}
+
+		*client = newClient
+
+		// Update available models based on new provider
+		if err := app.cfg.Validate(); err != nil {
+			display.ShowError(fmt.Sprintf("Configuration error: %v", err))
+			return false
+		}
+
+		fmt.Printf("✓ Switched to %s\n", app.getProviderName())
+		fmt.Printf("  Model: %s\n", app.cfg.Model)
+		fmt.Printf("  Available models: %s\n", app.cfg.GetAvailableModelsString())
+		fmt.Println("  Conversation history cleared")
+		return true
+	} else {
+		fmt.Printf("Current provider: %s\n", app.getProviderName())
+		fmt.Println("Available: copilot, azure")
+		return false
 	}
 }
 
