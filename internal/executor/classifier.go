@@ -23,6 +23,7 @@ var safeCommands = []string{
 	"which", "whoami", "date", "wc", "sort", "uniq", "diff",
 	"env", "printenv", "df", "du", "ps", "top", "tree",
 	"file", "stat", "basename", "dirname", "realpath",
+	"curl", "wget", "ping", "traceroute", "nslookup", "dig",
 }
 
 // Safe command patterns (regex) for read-only operations
