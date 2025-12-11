@@ -17,11 +17,12 @@ import (
 
 // InteractiveSession holds the state for interactive mode
 type InteractiveSession struct {
-	app      *App
-	client   api.AIClient
-	exec     *executor.Executor
-	messages []api.Message
-	exitFlag bool
+	app         *App
+	client      api.AIClient
+	exec        *executor.Executor
+	messages    []api.Message
+	exitFlag    bool
+	inputBuffer []string // Buffer for multiline input
 }
 
 // completer provides auto-suggestions for commands
@@ -76,6 +77,7 @@ func (app *App) runInteractive() {
 	}
 	fmt.Println("Type /help for commands, Ctrl+C or Ctrl+D to quit")
 	fmt.Println("Commands auto-complete as you type")
+	fmt.Println("End a line with \\ for multiline input")
 	fmt.Println()
 
 	session := &InteractiveSession{
@@ -137,12 +139,28 @@ func (s *InteractiveSession) executor(input string) {
 		return
 	}
 
+	// Handle multiline input with backslash continuation
+	if strings.HasSuffix(input, "\\") {
+		// Remove the trailing backslash and add to buffer
+		line := strings.TrimSuffix(input, "\\")
+		s.inputBuffer = append(s.inputBuffer, line)
+		fmt.Print("... ") // Show continuation prompt
+		return
+	}
+
+	// If we have buffered lines, combine them with current input
+	if len(s.inputBuffer) > 0 {
+		s.inputBuffer = append(s.inputBuffer, input)
+		input = strings.Join(s.inputBuffer, "\n")
+		s.inputBuffer = nil // Clear the buffer
+	}
+
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return
 	}
 
-	// Handle commands
+	// Handle commands (only if not in multiline mode - first line determines if it's a command)
 	if strings.HasPrefix(input, "/") {
 		if s.app.handleCommand(input, &s.messages, &s.client, s.exec) {
 			s.exitFlag = true
