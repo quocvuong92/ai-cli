@@ -28,7 +28,7 @@ This will open a browser window where you can authorize the application.
 Your GitHub token will be stored locally for future use.
 
 Examples:
-  ai login`,
+  ai-cli login`,
 		RunE: runLogin,
 	}
 }
@@ -40,11 +40,11 @@ func NewLogoutCmd() *cobra.Command {
 		Short: "Remove stored GitHub credentials",
 		Long: `Remove stored GitHub credentials.
 
-This will delete your stored GitHub token. You will need to run 'ai login'
+This will delete your stored GitHub token. You will need to run 'ai-cli login'
 again to use GitHub Copilot.
 
 Examples:
-  ai logout`,
+  ai-cli logout`,
 		RunE: runLogout,
 	}
 }
@@ -59,7 +59,7 @@ func NewStatusCmd() *cobra.Command {
 Displays whether you are logged in and which provider is active.
 
 Examples:
-  ai status`,
+  ai-cli status`,
 		RunE: runStatus,
 	}
 }
@@ -68,7 +68,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// Check if already logged in
 	if auth.IsLoggedIn() {
 		fmt.Println("Already logged in to GitHub Copilot.")
-		fmt.Println("Run 'ai logout' first if you want to re-authenticate.")
+		fmt.Println("Run 'ai-cli logout' first if you want to re-authenticate.")
 		return nil
 	}
 
@@ -123,7 +123,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Println("Successfully logged in to GitHub Copilot!")
-	fmt.Println("You can now use 'ai' commands with GitHub Copilot.")
+	fmt.Println("You can now use 'ai-cli' commands with GitHub Copilot.")
 
 	return nil
 }
@@ -153,7 +153,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Token stored at: %s\n", tokenPath)
 	} else {
 		fmt.Printf("  GitHub Copilot: Not logged in\n")
-		fmt.Printf("  Run 'ai login' to authenticate\n")
+		fmt.Printf("  Run 'ai-cli login' to authenticate\n")
 	}
 
 	return nil

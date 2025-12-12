@@ -34,7 +34,7 @@ func Execute() {
 	app := NewApp()
 
 	rootCmd := &cobra.Command{
-		Use:   "ai [query]",
+		Use:   "ai-cli [query]",
 		Short: "A CLI client for AI models with web search",
 		Long: `AI CLI is a command-line client for AI models (GitHub Copilot, Azure OpenAI),
 with optional web search powered by Tavily, Linkup, or Brave.
@@ -42,12 +42,12 @@ with optional web search powered by Tavily, Linkup, or Brave.
 Supports multiple providers and API keys with automatic rotation.
 
 Examples:
-  ai "What is Kubernetes?"
-  ai -m gpt-4o "Explain Docker"
-  ai --web "Latest news on Go 1.24"
-  ai --web --provider brave "Latest AI news"
-  ai -i                             # Interactive mode
-  ai -ir                            # Interactive with markdown rendering`,
+  ai-cli "What is Kubernetes?"
+  ai-cli -m gpt-4o "Explain Docker"
+  ai-cli --web "Latest news on Go 1.24"
+  ai-cli --web --provider brave "Latest AI news"
+  ai-cli -i                             # Interactive mode
+  ai-cli -ir                            # Interactive with markdown rendering`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			app.run(cmd, args)
@@ -89,7 +89,7 @@ func (app *App) run(cmd *cobra.Command, args []string) {
 		_ = app.cfg.Validate()
 		if len(app.cfg.AvailableModels) == 0 {
 			fmt.Println("No models configured.")
-			fmt.Println("Run 'ai login' for GitHub Copilot or set AZURE_OPENAI_MODELS.")
+			fmt.Println("Run 'ai-cli login' for GitHub Copilot or set AZURE_OPENAI_MODELS.")
 			os.Exit(1)
 		}
 		display.ShowModels(app.cfg.AvailableModels, app.cfg.Model)
