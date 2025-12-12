@@ -459,14 +459,64 @@ func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *execu
 
 	// Keep calling the API until there are no more tool calls
 	for {
-		sp := display.NewSpinner("Thinking...")
-		sp.Start()
+		var resp *api.ChatResponse
+		var err error
 
-		resp, err := client.QueryWithHistoryAndToolsContext(ctx, *messages, tools)
-		sp.Stop()
+		if app.cfg.Stream {
+			// Streaming mode
+			var fullContent strings.Builder
+			firstChunk := true
 
-		if err != nil {
-			return "", err
+			sp := display.NewSpinner("Thinking...")
+			sp.Start()
+
+			err = client.QueryStreamWithHistoryAndToolsContext(ctx, *messages, tools,
+				func(content string) {
+					if firstChunk {
+						firstChunk = false
+						if app.cfg.Render {
+							sp.UpdateMessage("Receiving...")
+						} else {
+							sp.Stop()
+						}
+					}
+					if app.cfg.Render {
+						fullContent.WriteString(content)
+					} else {
+						fmt.Print(content)
+					}
+				},
+				func(finalResp *api.ChatResponse) {
+					resp = finalResp
+				},
+			)
+
+			sp.Stop()
+
+			if err != nil {
+				return "", err
+			}
+
+			// If no tool calls were made and we have content, display final rendered content
+			if resp != nil && !resp.Choices[0].HasToolCalls() {
+				if app.cfg.Render && fullContent.Len() > 0 {
+					display.ShowContentRendered(fullContent.String())
+				} else if !app.cfg.Render {
+					fmt.Println() // Add newline after streaming
+				}
+				return resp.GetContent(), nil
+			}
+		} else {
+			// Non-streaming mode
+			sp := display.NewSpinner("Thinking...")
+			sp.Start()
+
+			resp, err = client.QueryWithHistoryAndToolsContext(ctx, *messages, tools)
+			sp.Stop()
+
+			if err != nil {
+				return "", err
+			}
 		}
 
 		// Check if there are tool calls

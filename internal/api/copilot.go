@@ -222,7 +222,12 @@ func (c *CopilotClient) QueryStreamWithHistoryAndToolsContext(ctx context.Contex
 		return c.handleError(resp.StatusCode, body)
 	}
 
-	var finalResp *ChatResponse
+	// Accumulate content and tool calls from streaming chunks
+	var contentBuilder strings.Builder
+	toolCallsMap := make(map[int]*ToolCall) // Index -> ToolCall for accumulating chunks
+	var finalUsage Usage
+	var responseID string
+
 	reader := bufio.NewReader(resp.Body)
 
 	for {
@@ -259,18 +264,71 @@ func (c *CopilotClient) QueryStreamWithHistoryAndToolsContext(ctx context.Contex
 			continue
 		}
 
-		// Send content chunk
+		// Capture response ID
+		if chunk.ID != "" {
+			responseID = chunk.ID
+		}
+
+		// Send content chunk and accumulate
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			onChunk(chunk.Choices[0].Delta.Content)
+			content := chunk.Choices[0].Delta.Content
+			contentBuilder.WriteString(content)
+			onChunk(content)
+		}
+
+		// Accumulate tool calls from streaming chunks
+		if len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) > 0 {
+			for _, tc := range chunk.Choices[0].Delta.ToolCalls {
+				idx := tc.Index
+				if existing, ok := toolCallsMap[idx]; ok {
+					// Append to existing tool call
+					existing.Function.Arguments += tc.Function.Arguments
+				} else {
+					// Create new tool call entry
+					toolCallsMap[idx] = &ToolCall{
+						ID:    tc.ID,
+						Type:  tc.Type,
+						Index: idx,
+					}
+					toolCallsMap[idx].Function.Name = tc.Function.Name
+					toolCallsMap[idx].Function.Arguments = tc.Function.Arguments
+				}
+			}
 		}
 
 		// Capture usage from final chunk
 		if chunk.Usage.TotalTokens > 0 {
-			finalResp = &chunk
+			finalUsage = chunk.Usage
 		}
 	}
 
-	if onDone != nil && finalResp != nil {
+	// Build the final response with accumulated content and tool calls
+	if onDone != nil {
+		var toolCalls []ToolCall
+		for i := 0; i < len(toolCallsMap); i++ {
+			if tc, ok := toolCallsMap[i]; ok {
+				toolCalls = append(toolCalls, *tc)
+			}
+		}
+
+		finalResp := &ChatResponse{
+			ID: responseID,
+			Choices: []Choice{
+				{
+					Index: 0,
+					Message: Message{
+						Role:      "assistant",
+						Content:   contentBuilder.String(),
+						ToolCalls: toolCalls,
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: finalUsage,
+		}
+		if len(toolCalls) > 0 {
+			finalResp.Choices[0].FinishReason = "tool_calls"
+		}
 		onDone(finalResp)
 	}
 
