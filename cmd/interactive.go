@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/elk-language/go-prompt"
@@ -13,6 +14,7 @@ import (
 	"github.com/quocvuong92/ai-cli/internal/config"
 	"github.com/quocvuong92/ai-cli/internal/display"
 	"github.com/quocvuong92/ai-cli/internal/executor"
+	settingspkg "github.com/quocvuong92/ai-cli/internal/settings"
 )
 
 // InteractiveSession holds the state for interactive mode
@@ -56,6 +58,9 @@ func (s *InteractiveSession) completer(d prompt.Document) ([]prompt.Suggest, ist
 		{Text: "/provider azure", Description: "Switch to Azure OpenAI"},
 		{Text: "/allow-dangerous", Description: "Enable dangerous commands (with confirmation)"},
 		{Text: "/show-permissions", Description: "Show command execution permissions"},
+		{Text: "/allow", Description: "Add allow rule (e.g., /allow git:*)"},
+		{Text: "/deny", Description: "Add deny rule (e.g., /deny rm *)"},
+		{Text: "/clear-session", Description: "Clear session-only permissions"},
 	}
 
 	return prompt.FilterHasPrefix(suggestions, w, true), startIndex, endIndex
@@ -239,7 +244,10 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 		fmt.Printf("  %-24s %s\n", "/provider <name>", "Switch AI provider (copilot, azure)")
 		fmt.Printf("  %-24s %s\n", "/provider", "Show current provider")
 		fmt.Printf("  %-24s %s\n", "/allow-dangerous", "Allow dangerous commands (with confirmation)")
-		fmt.Printf("  %-24s %s\n", "/show-permissions", "Show command execution permissions")
+		fmt.Printf("  %-24s %s\n", "/show-permissions", "Show permission settings and rules")
+		fmt.Printf("  %-24s %s\n", "/allow <pattern>", "Add persistent allow rule (e.g., git:*)")
+		fmt.Printf("  %-24s %s\n", "/deny <pattern>", "Add persistent deny rule (takes precedence)")
+		fmt.Printf("  %-24s %s\n", "/clear-session", "Clear session-only permissions")
 		fmt.Printf("  %-24s %s\n", "/help, /h", "Show this help")
 		fmt.Println()
 
@@ -265,6 +273,52 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 	case "/show-permissions":
 		settings := exec.GetPermissionManager().GetSettings()
 		display.ShowPermissionSettings(settings)
+		// Show rules
+		allowRules := exec.GetPermissionManager().GetAllowRules()
+		denyRules := exec.GetPermissionManager().GetDenyRules()
+		var allowStrs, denyStrs []string
+		for _, r := range allowRules {
+			allowStrs = append(allowStrs, settingspkg.FormatPattern(r))
+		}
+		for _, r := range denyRules {
+			denyStrs = append(denyStrs, settingspkg.FormatPattern(r))
+		}
+		display.ShowPermissionRules(allowStrs, denyStrs)
+
+	case "/allow":
+		if len(parts) > 1 {
+			pattern := strings.TrimSpace(parts[1])
+			if err := exec.GetPermissionManager().AddPatternRule(pattern, false); err != nil {
+				display.ShowError(fmt.Sprintf("Failed to add allow rule: %v", err))
+			} else {
+				fmt.Printf("✓ Added allow rule: %s\n", pattern)
+			}
+		} else {
+			fmt.Println("Usage: /allow <pattern>")
+			fmt.Println("Examples:")
+			fmt.Println("  /allow git:*         Allow all git commands")
+			fmt.Println("  /allow npm run *     Allow npm run with any script")
+			fmt.Println("  /allow ls -la        Allow specific command")
+		}
+
+	case "/deny":
+		if len(parts) > 1 {
+			pattern := strings.TrimSpace(parts[1])
+			if err := exec.GetPermissionManager().AddPatternRule(pattern, true); err != nil {
+				display.ShowError(fmt.Sprintf("Failed to add deny rule: %v", err))
+			} else {
+				fmt.Printf("✓ Added deny rule: %s (takes precedence over allow rules)\n", pattern)
+			}
+		} else {
+			fmt.Println("Usage: /deny <pattern>")
+			fmt.Println("Examples:")
+			fmt.Println("  /deny rm *           Block all rm commands")
+			fmt.Println("  /deny curl *         Block all curl commands")
+		}
+
+	case "/clear-session":
+		exec.GetPermissionManager().ClearSessionAllowlist()
+		fmt.Println("Session allowlist cleared.")
 
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
@@ -561,8 +615,8 @@ func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *execu
 					} else {
 						// Ask for confirmation if needed
 						if needsConfirm {
-							allow, always := display.AskCommandConfirmation(args.Command, args.Reasoning)
-							if !allow {
+							choice := display.AskCommandConfirmationExtended(args.Command, args.Reasoning)
+							if choice == display.ApprovalDenied {
 								toolResult = "Command execution denied by user"
 								*messages = append(*messages, api.Message{
 									Role:       "tool",
@@ -571,8 +625,14 @@ func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *execu
 								})
 								continue
 							}
-							if always {
-								exec.GetPermissionManager().AddToAllowlist(args.Command)
+							// Handle different approval types
+							switch choice {
+							case display.ApprovalSession:
+								_ = exec.GetPermissionManager().AddToAllowlist(args.Command, executor.ApprovalSession)
+							case display.ApprovalAlways:
+								if err := exec.GetPermissionManager().AddToAllowlist(args.Command, executor.ApprovalAlways); err != nil {
+									fmt.Fprintf(os.Stderr, "Warning: Failed to save permission: %v\n", err)
+								}
 							}
 						}
 
