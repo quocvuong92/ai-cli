@@ -50,6 +50,7 @@ var DefaultCopilotModels = []string{
 	// GPT models
 	"gpt-5",
 	"gpt-5.1",
+	"gpt-5.2",
 	// Claude models
 	"claude-sonnet-4",
 	"claude-sonnet-4.5",
