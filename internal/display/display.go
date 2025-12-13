@@ -220,13 +220,45 @@ func ShowCommandBlocked(command, reason string) {
 	fmt.Fprintf(os.Stderr, "Reason: %s\n", reason)
 }
 
+// ApprovalChoice represents the user's choice for command approval
+type ApprovalChoice int
+
+const (
+	// ApprovalDenied means the user denied the command
+	ApprovalDenied ApprovalChoice = iota
+	// ApprovalOnce means allow this command once
+	ApprovalOnce
+	// ApprovalSession means allow for this session
+	ApprovalSession
+	// ApprovalAlways means save to persistent settings
+	ApprovalAlways
+)
+
 // AskCommandConfirmation asks the user to confirm command execution
-// Returns: (allowed bool, always bool)
+// Returns: (allowed bool, always bool) - kept for backward compatibility
 func AskCommandConfirmation(command, reasoning string) (bool, bool) {
+	choice := AskCommandConfirmationExtended(command, reasoning)
+	switch choice {
+	case ApprovalOnce:
+		return true, false
+	case ApprovalSession:
+		return true, false // Session is like "always" for backward compat
+	case ApprovalAlways:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// AskCommandConfirmationExtended asks the user to confirm command execution
+// Returns: ApprovalChoice indicating user's decision
+func AskCommandConfirmationExtended(command, reasoning string) ApprovalChoice {
 	fmt.Printf("\n⚠️  Command Execution Request\n")
 	fmt.Printf("Command:  %s\n", command)
-	fmt.Printf("Reason:   %s\n", reasoning)
-	fmt.Printf("\nAllow? [y]es / [n]o / [a]lways: ")
+	if reasoning != "" {
+		fmt.Printf("Reason:   %s\n", reasoning)
+	}
+	fmt.Printf("\nAllow? [y]es once / [s]ession / [a]lways / [n]o: ")
 
 	// Read single character from stdin
 	var buf [1]byte
@@ -236,20 +268,77 @@ func AskCommandConfirmation(command, reasoning string) (bool, bool) {
 
 	switch response {
 	case "y":
-		return true, false
+		return ApprovalOnce
+	case "s":
+		return ApprovalSession
 	case "a":
-		return true, true
+		return ApprovalAlways
 	default:
-		return false, false
+		return ApprovalDenied
 	}
 }
 
 // ShowPermissionSettings displays current permission settings
 func ShowPermissionSettings(settings map[string]interface{}) {
-	fmt.Println("Permission Settings:")
-	fmt.Printf("  Auto-allow safe commands: %v\n", settings["auto_allow_reads"])
-	fmt.Printf("  Dangerous mode enabled:   %v\n", settings["dangerous_enabled"])
-	fmt.Printf("  Commands in allowlist:    %v\n", settings["allowlist_count"])
+	fmt.Println("\n📋 Permission Settings:")
+	fmt.Println()
+
+	// Behavior settings
+	fmt.Println("Behavior:")
+	if v, ok := settings["auto_allow_safe"]; ok {
+		fmt.Printf("  Auto-allow safe commands: %v\n", v)
+	}
+	if v, ok := settings["dangerous_enabled"]; ok {
+		fmt.Printf("  Dangerous mode enabled:   %v\n", v)
+	}
+
+	// Rules count
+	fmt.Println()
+	fmt.Println("Rules:")
+	if v, ok := settings["allow_rules"]; ok {
+		fmt.Printf("  Allow rules: %v\n", v)
+	}
+	if v, ok := settings["deny_rules"]; ok {
+		fmt.Printf("  Deny rules:  %v\n", v)
+	}
+	if v, ok := settings["session_count"]; ok {
+		fmt.Printf("  Session allowlist: %v commands\n", v)
+	}
+
+	// Paths
+	fmt.Println()
+	fmt.Println("Settings files:")
+	if v, ok := settings["global_path"]; ok && v != "" {
+		fmt.Printf("  Global:  %v\n", v)
+	}
+	if v, ok := settings["project_path"]; ok && v != "" {
+		fmt.Printf("  Project: %v\n", v)
+	}
+	fmt.Println()
+}
+
+// ShowPermissionRules displays permission rules in a formatted way
+func ShowPermissionRules(allowRules, denyRules []string) {
+	if len(denyRules) > 0 {
+		fmt.Println("Deny rules (take precedence):")
+		for _, r := range denyRules {
+			fmt.Printf("  - %s\n", r)
+		}
+		fmt.Println()
+	}
+
+	if len(allowRules) > 0 {
+		fmt.Println("Allow rules:")
+		for _, r := range allowRules {
+			fmt.Printf("  + %s\n", r)
+		}
+		fmt.Println()
+	}
+
+	if len(allowRules) == 0 && len(denyRules) == 0 {
+		fmt.Println("No custom permission rules configured.")
+		fmt.Println()
+	}
 }
 
 // TryOpenBrowser attempts to open a URL in the default browser
