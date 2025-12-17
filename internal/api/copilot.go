@@ -1,20 +1,17 @@
 package api
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/quocvuong92/ai-cli/internal/auth"
 	"github.com/quocvuong92/ai-cli/internal/config"
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // CopilotClient is the GitHub Copilot API client
@@ -28,7 +25,7 @@ type CopilotClient struct {
 func NewCopilotClient(cfg *config.Config, tokenManager *auth.TokenManager) *CopilotClient {
 	return &CopilotClient{
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: constants.DefaultAPITimeout,
 		},
 		config:       cfg,
 		tokenManager: tokenManager,
@@ -222,117 +219,25 @@ func (c *CopilotClient) QueryStreamWithHistoryAndToolsContext(ctx context.Contex
 		return c.handleError(resp.StatusCode, body)
 	}
 
-	// Accumulate content and tool calls from streaming chunks
-	var contentBuilder strings.Builder
-	toolCallsMap := make(map[int]*ToolCall) // Index -> ToolCall for accumulating chunks
-	var finalUsage Usage
-	var responseID string
-
-	reader := bufio.NewReader(resp.Body)
-
-	for {
-		// Check for context cancellation
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("request cancelled: %w", err)
-		}
-
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("failed to read stream: %w", err)
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk ChatResponse
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			log.Printf("Failed to parse streaming chunk: %v (data: %s)", err, data)
-			continue
-		}
-
-		// Capture response ID
-		if chunk.ID != "" {
-			responseID = chunk.ID
-		}
-
-		// Send content chunk and accumulate
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			content := chunk.Choices[0].Delta.Content
-			contentBuilder.WriteString(content)
-			onChunk(content)
-		}
-
-		// Accumulate tool calls from streaming chunks
-		if len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) > 0 {
-			for _, tc := range chunk.Choices[0].Delta.ToolCalls {
-				idx := tc.Index
-				if existing, ok := toolCallsMap[idx]; ok {
-					// Append to existing tool call
-					existing.Function.Arguments += tc.Function.Arguments
-				} else {
-					// Create new tool call entry
-					toolCallsMap[idx] = &ToolCall{
-						ID:    tc.ID,
-						Type:  tc.Type,
-						Index: idx,
-					}
-					toolCallsMap[idx].Function.Name = tc.Function.Name
-					toolCallsMap[idx].Function.Arguments = tc.Function.Arguments
-				}
-			}
-		}
-
-		// Capture usage from final chunk
-		if chunk.Usage.TotalTokens > 0 {
-			finalUsage = chunk.Usage
-		}
+	// Process SSE stream using shared processor
+	processor := NewSSEProcessor(resp.Body)
+	if err := processor.Process(ctx, onChunk); err != nil {
+		return fmt.Errorf("failed to process stream: %w", err)
 	}
 
-	// Build the final response with accumulated content and tool calls
+	// Build and return final response
 	if onDone != nil {
-		var toolCalls []ToolCall
-		for i := 0; i < len(toolCallsMap); i++ {
-			if tc, ok := toolCallsMap[i]; ok {
-				toolCalls = append(toolCalls, *tc)
-			}
-		}
-
-		finalResp := &ChatResponse{
-			ID: responseID,
-			Choices: []Choice{
-				{
-					Index: 0,
-					Message: Message{
-						Role:      "assistant",
-						Content:   contentBuilder.String(),
-						ToolCalls: toolCalls,
-					},
-					FinishReason: "stop",
-				},
-			},
-			Usage: finalUsage,
-		}
-		if len(toolCalls) > 0 {
-			finalResp.Choices[0].FinishReason = "tool_calls"
-		}
-		onDone(finalResp)
+		onDone(processor.BuildResponse())
 	}
 
 	return nil
+}
+
+// Close stops the token manager's auto-refresh goroutine
+func (c *CopilotClient) Close() {
+	if c.tokenManager != nil {
+		c.tokenManager.StopAutoRefresh()
+	}
 }
 
 // handleError creates an appropriate error from the API response

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/quocvuong92/ai-cli/internal/auth"
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // Environment variable names
@@ -30,36 +31,24 @@ const (
 	EnvWebSearchProvider = "WEB_SEARCH_PROVIDER"
 )
 
-// Defaults
+// Defaults - re-exported from constants for convenience
 const (
-	DefaultModel          = "gpt-5-mini"
-	DefaultSystemMessage  = "Be precise and concise."
-	DefaultSearchProvider = "tavily"
-	DefaultAccountType    = "individual"
+	DefaultModel          = constants.DefaultModel
+	DefaultSystemMessage  = constants.DefaultSystemMessage
+	DefaultSearchProvider = constants.DefaultSearchProvider
+	DefaultAccountType    = constants.DefaultAccountType
 	DefaultProvider       = "" // Auto-detect
 )
 
-// DefaultCopilotModels are the models available through GitHub Copilot
-// Free for Pro subscription: gpt-5-mini (default), gpt-4.1, grok-code-fast-1
-var DefaultCopilotModels = []string{
-	// Free tier (Pro subscription)
-	"gpt-5-mini",
-	"gpt-4.1",
-	"grok-code-fast-1",
-	"gpt-4o",
-	// GPT models
-	"gpt-5",
-	"gpt-5.1",
-	"gpt-5.2",
-	// Claude models
-	"claude-sonnet-4",
-	"claude-sonnet-4.5",
-	"claude-opus-4.5",
-	"claude-haiku-4.5",
-	// Gemini models
-	"gemini-2.5-pro",
-	"gemini-3-pro-preview",
-}
+// Timeout constants - re-exported from constants for convenience
+const (
+	DefaultAPITimeout     = constants.DefaultAPITimeout
+	DefaultCommandTimeout = constants.DefaultCommandTimeout
+	DefaultOAuthTimeout   = constants.DefaultOAuthTimeout
+)
+
+// DefaultCopilotModels - re-exported from constants for convenience
+var DefaultCopilotModels = constants.DefaultCopilotModels
 
 // Errors
 var (
@@ -154,6 +143,7 @@ type Config struct {
 	// Azure OpenAI settings
 	AzureEndpoint   string
 	AzureAPIKey     string
+	AzureModels     []string // Available Azure models (from config file or env)
 	Model           string
 	AvailableModels []string
 
@@ -165,17 +155,6 @@ type Config struct {
 	TavilyKeys *KeyRotator
 	LinkupKeys *KeyRotator
 	BraveKeys  *KeyRotator
-
-	// Legacy fields for backward compatibility (used by API clients)
-	TavilyAPIKey        string
-	TavilyAPIKeys       []string
-	TavilyCurrentKeyIdx int
-	LinkupAPIKey        string
-	LinkupAPIKeys       []string
-	LinkupCurrentKeyIdx int
-	BraveAPIKey         string
-	BraveAPIKeys        []string
-	BraveCurrentKeyIdx  int
 
 	// Web search provider selection
 	WebSearchProvider string // "tavily", "linkup", or "brave"
@@ -196,6 +175,12 @@ func NewConfig() *Config {
 
 // Validate validates the configuration and loads from environment
 func (c *Config) Validate() error {
+	// Load from config file first (lowest priority)
+	if fileConfig, err := LoadConfigFile(); err == nil {
+		c.ApplyFileConfig(fileConfig)
+	}
+	// Errors loading config file are silently ignored - env vars and flags take precedence
+
 	// Load provider selection
 	if c.Provider == "" {
 		c.Provider = os.Getenv(EnvAIProvider)
@@ -236,14 +221,14 @@ func (c *Config) Validate() error {
 		c.AzureAPIKey = strings.TrimSpace(os.Getenv(EnvAzureAPIKey))
 	}
 
-	// Load available models from Azure env (store separately)
-	var azureModels []string
+	// Load Azure models from env (env var overrides config file)
 	if modelsEnv := os.Getenv(EnvAzureModels); modelsEnv != "" {
+		c.AzureModels = nil // Clear config file models
 		models := strings.Split(modelsEnv, ",")
 		for _, m := range models {
 			m = strings.TrimSpace(m)
 			if m != "" {
-				azureModels = append(azureModels, m)
+				c.AzureModels = append(c.AzureModels, m)
 			}
 		}
 	}
@@ -258,8 +243,8 @@ func (c *Config) Validate() error {
 			return ErrAPIKeyNotFound
 		}
 		// Use Azure models
-		if len(azureModels) > 0 {
-			c.AvailableModels = azureModels
+		if len(c.AzureModels) > 0 {
+			c.AvailableModels = c.AzureModels
 		}
 	} else if c.Provider == "copilot" || c.Provider == "github" {
 		// Use Copilot models
@@ -268,19 +253,20 @@ func (c *Config) Validate() error {
 		// Auto-detect: prefer Copilot if logged in
 		if auth.IsLoggedIn() {
 			c.AvailableModels = c.CopilotModels
-		} else if len(azureModels) > 0 {
-			c.AvailableModels = azureModels
+		} else if len(c.AzureModels) > 0 {
+			c.AvailableModels = c.AzureModels
 		} else {
 			c.AvailableModels = c.CopilotModels
 		}
 	}
 
-	// Load default model
-	if c.Model == "" && len(c.AvailableModels) > 0 {
-		c.Model = c.AvailableModels[0]
-	}
-	if c.Model == "" {
-		c.Model = DefaultModel
+	// Load default model - pick first available if not set or invalid for current provider
+	if c.Model == "" || !c.ValidateModel(c.Model) {
+		if len(c.AvailableModels) > 0 {
+			c.Model = c.AvailableModels[0]
+		} else {
+			c.Model = DefaultModel
+		}
 	}
 
 	// Validate model if available models are configured
@@ -292,9 +278,6 @@ func (c *Config) Validate() error {
 	c.TavilyKeys = NewKeyRotator(EnvTavilyAPIKeys)
 	c.LinkupKeys = NewKeyRotator(EnvLinkupAPIKeys)
 	c.BraveKeys = NewKeyRotator(EnvBraveAPIKeys)
-
-	// Sync legacy fields for backward compatibility
-	c.syncLegacyFields()
 
 	// Set web search provider (default to tavily, or auto-detect based on available keys)
 	if c.WebSearchProvider == "" {
@@ -334,24 +317,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// syncLegacyFields synchronizes KeyRotator state to legacy fields for backward compatibility
-func (c *Config) syncLegacyFields() {
-	// Tavily
-	c.TavilyAPIKey = c.TavilyKeys.GetCurrentKey()
-	c.TavilyAPIKeys = c.TavilyKeys.keys
-	c.TavilyCurrentKeyIdx = c.TavilyKeys.GetCurrentIndex()
-
-	// Linkup
-	c.LinkupAPIKey = c.LinkupKeys.GetCurrentKey()
-	c.LinkupAPIKeys = c.LinkupKeys.keys
-	c.LinkupCurrentKeyIdx = c.LinkupKeys.GetCurrentIndex()
-
-	// Brave
-	c.BraveAPIKey = c.BraveKeys.GetCurrentKey()
-	c.BraveAPIKeys = c.BraveKeys.keys
-	c.BraveCurrentKeyIdx = c.BraveKeys.GetCurrentIndex()
-}
-
 // GetAzureAPIURL builds the full API URL for chat completions
 func (c *Config) GetAzureAPIURL() string {
 	return fmt.Sprintf("%s/openai/v1/chat/completions",
@@ -377,52 +342,4 @@ func (c *Config) GetAvailableModelsString() string {
 		return "(not configured - set AZURE_OPENAI_MODELS)"
 	}
 	return strings.Join(c.AvailableModels, ", ")
-}
-
-// RotateTavilyKey moves to the next available Tavily API key
-func (c *Config) RotateTavilyKey() (string, error) {
-	key, err := c.TavilyKeys.Rotate()
-	if err != nil {
-		return "", err
-	}
-	c.TavilyAPIKey = key
-	c.TavilyCurrentKeyIdx = c.TavilyKeys.GetCurrentIndex()
-	return key, nil
-}
-
-// GetTavilyKeyCount returns the total number of Tavily keys
-func (c *Config) GetTavilyKeyCount() int {
-	return c.TavilyKeys.GetKeyCount()
-}
-
-// RotateLinkupKey moves to the next available Linkup API key
-func (c *Config) RotateLinkupKey() (string, error) {
-	key, err := c.LinkupKeys.Rotate()
-	if err != nil {
-		return "", err
-	}
-	c.LinkupAPIKey = key
-	c.LinkupCurrentKeyIdx = c.LinkupKeys.GetCurrentIndex()
-	return key, nil
-}
-
-// GetLinkupKeyCount returns the total number of Linkup keys
-func (c *Config) GetLinkupKeyCount() int {
-	return c.LinkupKeys.GetKeyCount()
-}
-
-// RotateBraveKey moves to the next available Brave API key
-func (c *Config) RotateBraveKey() (string, error) {
-	key, err := c.BraveKeys.Rotate()
-	if err != nil {
-		return "", err
-	}
-	c.BraveAPIKey = key
-	c.BraveCurrentKeyIdx = c.BraveKeys.GetCurrentIndex()
-	return key, nil
-}
-
-// GetBraveKeyCount returns the total number of Brave keys
-func (c *Config) GetBraveKeyCount() int {
-	return c.BraveKeys.GetKeyCount()
 }

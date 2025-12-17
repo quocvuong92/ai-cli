@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // Copilot API constants
@@ -41,7 +43,7 @@ type TokenManager struct {
 func NewTokenManager(githubToken string) *TokenManager {
 	return &TokenManager{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: constants.DefaultOAuthTimeout,
 		},
 		githubToken: githubToken,
 	}

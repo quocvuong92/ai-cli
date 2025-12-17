@@ -1,18 +1,15 @@
 package api
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/quocvuong92/ai-cli/internal/config"
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // Message represents a chat message
@@ -125,7 +122,7 @@ type AzureClient struct {
 func NewAzureClient(cfg *config.Config) *AzureClient {
 	return &AzureClient{
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: constants.DefaultAPITimeout,
 		},
 		config: cfg,
 	}
@@ -169,43 +166,46 @@ func (c *AzureClient) QueryWithHistoryAndToolsContext(ctx context.Context, messa
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.GetAzureAPIURL(), bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.config.AzureAPIKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp AzureErrorResponse
-		errMsg := fmt.Sprintf("status code %d", resp.StatusCode)
-		if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
-			errMsg = errResp.Error.Message
+	// Use retry logic for transient failures
+	return WithRetry(ctx, func() (*ChatResponse, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.GetAzureAPIURL(), bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		return nil, &APIError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("Azure API error: %s", errMsg),
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.config.AzureAPIKey)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send request: %w", err)
 		}
-	}
+		defer func() { _ = resp.Body.Close() }()
 
-	var chatResp ChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
 
-	return &chatResp, nil
+		if resp.StatusCode != http.StatusOK {
+			var errResp AzureErrorResponse
+			errMsg := fmt.Sprintf("status code %d", resp.StatusCode)
+			if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+				errMsg = errResp.Error.Message
+			}
+			return nil, &APIError{
+				StatusCode: resp.StatusCode,
+				Message:    fmt.Sprintf("Azure API error: %s", errMsg),
+			}
+		}
+
+		var chatResp ChatResponse
+		if err := json.Unmarshal(body, &chatResp); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		return &chatResp, nil
+	})
 }
 
 // QueryStream sends a streaming query to Azure OpenAI
@@ -246,146 +246,43 @@ func (c *AzureClient) QueryStreamWithHistoryAndToolsContext(ctx context.Context,
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.GetAzureAPIURL(), bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+c.config.AzureAPIKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		var errResp AzureErrorResponse
-		errMsg := fmt.Sprintf("status code %d", resp.StatusCode)
-		if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
-			errMsg = errResp.Error.Message
-		}
-		return &APIError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("Azure API error: %s", errMsg),
-		}
-	}
-
-	// Accumulate content and tool calls from streaming chunks
-	var contentBuilder strings.Builder
-	toolCallsMap := make(map[int]*ToolCall) // Index -> ToolCall for accumulating chunks
-	var finalUsage Usage
-	var responseID string
-
-	reader := bufio.NewReader(resp.Body)
-
-	for {
-		// Check for context cancellation
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("request cancelled: %w", err)
-		}
-
-		line, err := reader.ReadString('\n')
+	// Use retry logic for transient failures (before stream starts)
+	return WithStreamRetry(ctx, func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.GetAzureAPIURL(), bytes.NewBuffer(jsonData))
 		if err != nil {
-			if err == io.EOF {
-				break
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+c.config.AzureAPIKey)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send request: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			var errResp AzureErrorResponse
+			errMsg := fmt.Sprintf("status code %d", resp.StatusCode)
+			if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+				errMsg = errResp.Error.Message
 			}
-			return fmt.Errorf("failed to read stream: %w", err)
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk ChatResponse
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			// Log parse errors in verbose mode instead of silently ignoring
-			log.Printf("Failed to parse streaming chunk: %v (data: %s)", err, data)
-			continue
-		}
-
-		// Capture response ID
-		if chunk.ID != "" {
-			responseID = chunk.ID
-		}
-
-		// Send content chunk and accumulate
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			content := chunk.Choices[0].Delta.Content
-			contentBuilder.WriteString(content)
-			onChunk(content)
-		}
-
-		// Accumulate tool calls from streaming chunks
-		if len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) > 0 {
-			for _, tc := range chunk.Choices[0].Delta.ToolCalls {
-				idx := tc.Index
-				if existing, ok := toolCallsMap[idx]; ok {
-					// Append to existing tool call
-					existing.Function.Arguments += tc.Function.Arguments
-				} else {
-					// Create new tool call entry
-					toolCallsMap[idx] = &ToolCall{
-						ID:    tc.ID,
-						Type:  tc.Type,
-						Index: idx,
-					}
-					toolCallsMap[idx].Function.Name = tc.Function.Name
-					toolCallsMap[idx].Function.Arguments = tc.Function.Arguments
-				}
+			return nil, &APIError{
+				StatusCode: resp.StatusCode,
+				Message:    fmt.Sprintf("Azure API error: %s", errMsg),
 			}
 		}
 
-		// Capture usage from final chunk
-		if chunk.Usage.TotalTokens > 0 {
-			finalUsage = chunk.Usage
-		}
-	}
+		return resp, nil
+	}, onChunk, onDone)
+}
 
-	// Build the final response with accumulated content and tool calls
-	if onDone != nil {
-		var toolCalls []ToolCall
-		for i := 0; i < len(toolCallsMap); i++ {
-			if tc, ok := toolCallsMap[i]; ok {
-				toolCalls = append(toolCalls, *tc)
-			}
-		}
-
-		finalResp := &ChatResponse{
-			ID: responseID,
-			Choices: []Choice{
-				{
-					Index: 0,
-					Message: Message{
-						Role:      "assistant",
-						Content:   contentBuilder.String(),
-						ToolCalls: toolCalls,
-					},
-					FinishReason: "stop",
-				},
-			},
-			Usage: finalUsage,
-		}
-		if len(toolCalls) > 0 {
-			finalResp.Choices[0].FinishReason = "tool_calls"
-		}
-		onDone(finalResp)
-	}
-
-	return nil
+// Close is a no-op for AzureClient as it doesn't hold any resources
+func (c *AzureClient) Close() {
+	// No resources to clean up
 }
 
 // GetContent extracts the content from the response

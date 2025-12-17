@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/quocvuong92/ai-cli/internal/config"
 )
@@ -43,9 +42,7 @@ type LinkupErrorResponse struct {
 
 // LinkupClient is the Linkup search API client
 type LinkupClient struct {
-	httpClient    *http.Client
-	config        *config.Config
-	onKeyRotation KeyRotationCallback
+	*BaseSearchClient
 }
 
 // Ensure LinkupClient implements SearchClient
@@ -54,21 +51,18 @@ var _ SearchClient = (*LinkupClient)(nil)
 // NewLinkupClient creates a new Linkup client
 func NewLinkupClient(cfg *config.Config) *LinkupClient {
 	return &LinkupClient{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		config: cfg,
+		BaseSearchClient: NewBaseSearchClient(cfg.LinkupKeys, "Linkup"),
 	}
 }
 
 // SetKeyRotationCallback sets a callback function for key rotation events
 func (c *LinkupClient) SetKeyRotationCallback(callback func(fromIndex, toIndex, totalKeys int)) {
-	c.onKeyRotation = callback
+	c.BaseSearchClient.SetKeyRotationCallback(callback)
 }
 
 // Search performs a web search using Linkup (implements SearchClient interface)
 func (c *LinkupClient) Search(ctx context.Context, query string) (*SearchResponse, error) {
-	resp, err := c.searchWithRetry(ctx, query)
+	resp, err := SearchWithRetry(ctx, query, c.BaseSearchClient, c.doSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -77,51 +71,10 @@ func (c *LinkupClient) Search(ctx context.Context, query string) (*SearchRespons
 
 // SearchLegacy performs a web search using Linkup (legacy method for backward compatibility)
 func (c *LinkupClient) SearchLegacy(query string) (*LinkupResponse, error) {
-	return c.searchWithRetry(context.Background(), query)
+	return SearchWithRetry(context.Background(), query, c.BaseSearchClient, c.doSearch)
 }
 
-// searchWithRetry performs search with automatic key rotation on failure
-func (c *LinkupClient) searchWithRetry(ctx context.Context, query string) (*LinkupResponse, error) {
-	if c.config.GetLinkupKeyCount() <= 1 {
-		return c.doSearch(ctx, query)
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
-		// Check for context cancellation
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("search cancelled: %w", err)
-		}
-
-		resp, err := c.doSearch(ctx, query)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-
-		apiErr, ok := err.(*APIError)
-		if !ok || !ShouldRotateKey(apiErr.StatusCode) {
-			return nil, err
-		}
-
-		if rotateErr := c.rotateKey(); rotateErr != nil {
-			return nil, fmt.Errorf("%v (no more Linkup API keys available)", err)
-		}
-
-		// Apply backoff before retry
-		if attempt < MaxRetryAttempts-1 {
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("search cancelled: %w", ctx.Err())
-			case <-time.After(CalculateBackoff(attempt)):
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("max retry attempts (%d) exceeded: %v", MaxRetryAttempts, lastErr)
-}
-
-// doSearch performs a single search attempt
+// doSearch performs a single search attempt (Linkup-specific implementation)
 func (c *LinkupClient) doSearch(ctx context.Context, query string) (*LinkupResponse, error) {
 	reqBody := LinkupRequest{
 		Query:      query,
@@ -141,9 +94,9 @@ func (c *LinkupClient) doSearch(ctx context.Context, query string) (*LinkupRespo
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.config.LinkupAPIKey)
+	req.Header.Set("Authorization", "Bearer "+c.GetCurrentKey())
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -176,21 +129,6 @@ func (c *LinkupClient) doSearch(ctx context.Context, query string) (*LinkupRespo
 	}
 
 	return &linkupResp, nil
-}
-
-// rotateKey attempts to switch to the next available API key
-func (c *LinkupClient) rotateKey() error {
-	oldIndex := c.config.LinkupCurrentKeyIdx
-	_, err := c.config.RotateLinkupKey()
-	if err != nil {
-		return err
-	}
-
-	if c.onKeyRotation != nil {
-		c.onKeyRotation(oldIndex+1, c.config.LinkupCurrentKeyIdx+1, c.config.GetLinkupKeyCount())
-	}
-
-	return nil
 }
 
 // ToSearchResponse converts LinkupResponse to unified SearchResponse

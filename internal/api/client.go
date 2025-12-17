@@ -1,3 +1,6 @@
+// Package api provides unified AI client interfaces for multiple providers.
+// It supports GitHub Copilot and Azure OpenAI with automatic provider detection,
+// streaming responses, tool/function calling, and retry logic for transient failures.
 package api
 
 import (
@@ -8,7 +11,9 @@ import (
 	"github.com/quocvuong92/ai-cli/internal/config"
 )
 
-// AIClient defines the interface for AI API clients
+// AIClient defines the interface for AI API clients.
+// Both CopilotClient and AzureClient implement this interface,
+// allowing transparent switching between providers.
 type AIClient interface {
 	// Query sends a simple query (non-streaming)
 	Query(systemPrompt, userMessage string) (*ChatResponse, error)
@@ -39,14 +44,22 @@ type AIClient interface {
 
 	// QueryStreamWithHistoryAndToolsContext sends a streaming query with full message history, tools, and context support
 	QueryStreamWithHistoryAndToolsContext(ctx context.Context, messages []Message, tools []Tool, onChunk func(content string), onDone func(resp *ChatResponse)) error
+
+	// Close releases any resources held by the client (e.g., stops background goroutines)
+	Close()
 }
 
 // Ensure both clients implement AIClient interface
 var _ AIClient = (*AzureClient)(nil)
 var _ AIClient = (*CopilotClient)(nil)
 
-// NewClient creates an AI client based on configuration
-// It returns a Copilot client if configured, otherwise falls back to Azure
+// NewClient creates an AI client based on configuration.
+// Provider selection follows this priority:
+//  1. Explicit provider in cfg.Provider ("copilot", "github", or "azure")
+//  2. Auto-detect: GitHub Copilot if logged in, otherwise Azure if configured
+//
+// For Copilot, it automatically manages token refresh in the background.
+// Returns an error if no provider is available or configured.
 func NewClient(cfg *config.Config) (AIClient, error) {
 	switch cfg.Provider {
 	case "copilot", "github":
@@ -87,7 +100,10 @@ func NewClient(cfg *config.Config) (AIClient, error) {
 	}
 }
 
-// NewClientWithProvider creates an AI client for a specific provider
+// NewClientWithProvider creates an AI client for a specific provider,
+// temporarily overriding the provider setting in the config.
+// This is useful for testing or when the caller needs to explicitly
+// specify a provider regardless of the config's current setting.
 func NewClientWithProvider(cfg *config.Config, provider string) (AIClient, error) {
 	originalProvider := cfg.Provider
 	cfg.Provider = provider
