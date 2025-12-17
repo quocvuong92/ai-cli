@@ -65,17 +65,17 @@ type DefaultsConfig struct {
 func GetConfigPaths() []string {
 	var paths []string
 
-	// 1. Current directory
+	// 1. Current directory (project-specific config)
 	paths = append(paths, filepath.Join(".", ".ai-cli", ConfigFileName))
 
-	// 2. User config directory
-	if configDir, err := os.UserConfigDir(); err == nil {
-		paths = append(paths, filepath.Join(configDir, "ai-cli", ConfigFileName))
-	}
-
-	// 3. Home directory
+	// 2. Home directory ~/.config (common on Linux/macOS)
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(homeDir, ".config", "ai-cli", ConfigFileName))
+	}
+
+	// 3. OS-specific config directory (Library/Application Support on macOS)
+	if configDir, err := os.UserConfigDir(); err == nil {
+		paths = append(paths, filepath.Join(configDir, "ai-cli", ConfigFileName))
 	}
 
 	return paths

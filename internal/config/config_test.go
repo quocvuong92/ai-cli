@@ -64,9 +64,16 @@ func runInTempDir(t *testing.T) {
 		os.Chdir(oldWd)
 	})
 
-	// Also ensure no config file in user dirs affects tests
-	// Create empty .ai-cli dir to prevent loading from elsewhere
+	// Override HOME to prevent loading user config files
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	t.Cleanup(func() {
+		os.Setenv("HOME", oldHome)
+	})
+
+	// Create empty .ai-cli and .config/ai-cli dirs to prevent loading from elsewhere
 	os.MkdirAll(filepath.Join(tmpDir, ".ai-cli"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, ".config", "ai-cli"), 0755)
 }
 
 // =============================================================================
