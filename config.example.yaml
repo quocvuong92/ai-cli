@@ -4,9 +4,6 @@
 # AI provider: "copilot" or "azure" (default: auto-detect)
 provider: copilot
 
-# Default model to use (must be valid for your provider)
-model: gpt-4.1
-
 # GitHub Copilot settings
 copilot:
   account_type: individual # individual, business, or enterprise
