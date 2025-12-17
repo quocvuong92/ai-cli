@@ -260,18 +260,13 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Load default model - pick first available if not set or invalid for current provider
-	if c.Model == "" || !c.ValidateModel(c.Model) {
+	// Load default model - pick first available if not set
+	if c.Model == "" {
 		if len(c.AvailableModels) > 0 {
 			c.Model = c.AvailableModels[0]
 		} else {
 			c.Model = DefaultModel
 		}
-	}
-
-	// Validate model if available models are configured
-	if len(c.AvailableModels) > 0 && !c.ValidateModel(c.Model) {
-		return fmt.Errorf("%w: %s. Available: %s", ErrInvalidModel, c.Model, c.GetAvailableModelsString())
 	}
 
 	// Initialize key rotators

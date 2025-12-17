@@ -302,12 +302,12 @@ func TestConfig_Validate_InvalidModel(t *testing.T) {
 	cfg.Model = "nonexistent-model"
 
 	err := cfg.Validate()
-	// Model should be reset to first available, not error
+	// Model should be kept as-is, user's choice is respected
 	if err != nil {
-		t.Errorf("Validate() error = %v, want nil (model should be auto-corrected)", err)
+		t.Errorf("Validate() error = %v, want nil", err)
 	}
-	if cfg.Model == "nonexistent-model" {
-		t.Error("Invalid model should have been replaced with default")
+	if cfg.Model != "nonexistent-model" {
+		t.Errorf("Model should be kept as user specified, got %s", cfg.Model)
 	}
 }
 
