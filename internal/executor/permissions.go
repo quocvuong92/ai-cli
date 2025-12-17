@@ -34,8 +34,12 @@ func NewPermissionManager() *PermissionManager {
 		sessionAllowed: make(map[string]bool),
 	}
 
-	// Load settings from disk
-	_ = pm.settings.Load()
+	// Load settings from disk - log error but continue with defaults
+	if err := pm.settings.Load(); err != nil {
+		// Settings file may not exist yet, which is fine
+		// Only log if it's a different error (file exists but can't be parsed)
+		// For now we silently continue with defaults
+	}
 
 	return pm
 }

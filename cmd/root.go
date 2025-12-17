@@ -86,7 +86,9 @@ func (app *App) run(cmd *cobra.Command, args []string) {
 
 	// Handle --list-models flag
 	if app.listModels {
-		_ = app.cfg.Validate()
+		if err := app.cfg.Validate(); err != nil {
+			log.Printf("Config validation warning: %v", err)
+		}
 		if len(app.cfg.AvailableModels) == 0 {
 			fmt.Println("No models configured.")
 			fmt.Println("Run 'ai-cli login' for GitHub Copilot or set AZURE_OPENAI_MODELS.")

@@ -1,0 +1,57 @@
+# AI CLI Configuration
+# Copy this file to: ~/.config/ai-cli/config.yaml
+
+# AI provider: "copilot" or "azure" (default: auto-detect)
+provider: copilot
+
+# Default model to use (must be valid for your provider)
+model: gpt-4.1
+
+# GitHub Copilot settings
+copilot:
+  account_type: individual # individual, business, or enterprise
+  models: # Models you want to use (validates /model command)
+    # GPT models
+    - gpt-5-mini
+    - gpt-4.1
+    - gpt-5.1
+    - gpt-5.1-codex
+    - gpt-5.1-codex-mini
+    - gpt-5.2
+    # Grok models
+    - grok-code-fast-1
+    # Claude models
+    - claude-sonnet-4.5
+    - claude-opus-4.5
+    - claude-haiku-4.5
+    # Gemini models
+    - gemini-2.5-pro
+    - gemini-3-pro-preview
+
+# Azure OpenAI settings (required if provider: azure)
+azure:
+  endpoint: https://your-resource.openai.azure.com
+  api_key: your-azure-api-key-here
+  models: # List your deployed model names
+    - gpt-4
+    - gpt-4o
+
+# Web search settings
+web_search:
+  provider: tavily # tavily, linkup, or brave
+  tavily_keys:
+    - your-tavily-api-key-here
+  linkup_keys:
+    - your-linkup-api-key-here
+  brave_keys:
+    - your-brave-api-key-here
+
+# Default flags for interactive mode
+defaults:
+  stream: true
+  render: false
+  web_search: false
+  citations: false
+# Shell aliases (add to your .bashrc or .zshrc):
+# alias azure='ai-cli --provider azure -s'
+# alias aiq='ai-cli -s'

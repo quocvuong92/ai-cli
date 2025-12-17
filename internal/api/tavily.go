@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/quocvuong92/ai-cli/internal/config"
 )
@@ -43,9 +42,7 @@ type TavilyErrorResponse struct {
 
 // TavilyClient is the Tavily search API client
 type TavilyClient struct {
-	httpClient    *http.Client
-	config        *config.Config
-	onKeyRotation KeyRotationCallback
+	*BaseSearchClient
 }
 
 // Ensure TavilyClient implements SearchClient
@@ -54,21 +51,18 @@ var _ SearchClient = (*TavilyClient)(nil)
 // NewTavilyClient creates a new Tavily client
 func NewTavilyClient(cfg *config.Config) *TavilyClient {
 	return &TavilyClient{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		config: cfg,
+		BaseSearchClient: NewBaseSearchClient(cfg.TavilyKeys, "Tavily"),
 	}
 }
 
 // SetKeyRotationCallback sets a callback function for key rotation events
 func (c *TavilyClient) SetKeyRotationCallback(callback func(fromIndex, toIndex, totalKeys int)) {
-	c.onKeyRotation = callback
+	c.BaseSearchClient.SetKeyRotationCallback(callback)
 }
 
 // Search performs a web search using Tavily (implements SearchClient interface)
 func (c *TavilyClient) Search(ctx context.Context, query string) (*SearchResponse, error) {
-	resp, err := c.searchWithRetry(ctx, query)
+	resp, err := SearchWithRetry(ctx, query, c.BaseSearchClient, c.doSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -77,54 +71,13 @@ func (c *TavilyClient) Search(ctx context.Context, query string) (*SearchRespons
 
 // SearchLegacy performs a web search using Tavily (legacy method for backward compatibility)
 func (c *TavilyClient) SearchLegacy(query string) (*TavilyResponse, error) {
-	return c.searchWithRetry(context.Background(), query)
+	return SearchWithRetry(context.Background(), query, c.BaseSearchClient, c.doSearch)
 }
 
-// searchWithRetry performs search with automatic key rotation on failure
-func (c *TavilyClient) searchWithRetry(ctx context.Context, query string) (*TavilyResponse, error) {
-	if c.config.GetTavilyKeyCount() <= 1 {
-		return c.doSearch(ctx, query)
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
-		// Check for context cancellation
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("search cancelled: %w", err)
-		}
-
-		resp, err := c.doSearch(ctx, query)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-
-		apiErr, ok := err.(*APIError)
-		if !ok || !ShouldRotateKey(apiErr.StatusCode) {
-			return nil, err
-		}
-
-		if rotateErr := c.rotateKey(); rotateErr != nil {
-			return nil, fmt.Errorf("%v (no more Tavily API keys available)", err)
-		}
-
-		// Apply backoff before retry
-		if attempt < MaxRetryAttempts-1 {
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("search cancelled: %w", ctx.Err())
-			case <-time.After(CalculateBackoff(attempt)):
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("max retry attempts (%d) exceeded: %v", MaxRetryAttempts, lastErr)
-}
-
-// doSearch performs a single search attempt
+// doSearch performs a single search attempt (Tavily-specific implementation)
 func (c *TavilyClient) doSearch(ctx context.Context, query string) (*TavilyResponse, error) {
 	reqBody := TavilyRequest{
-		APIKey:      c.config.TavilyAPIKey,
+		APIKey:      c.GetCurrentKey(),
 		Query:       query,
 		SearchDepth: "basic",
 		MaxResults:  5,
@@ -142,7 +95,7 @@ func (c *TavilyClient) doSearch(ctx context.Context, query string) (*TavilyRespo
 
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -171,21 +124,6 @@ func (c *TavilyClient) doSearch(ctx context.Context, query string) (*TavilyRespo
 	}
 
 	return &tavilyResp, nil
-}
-
-// rotateKey attempts to switch to the next available API key
-func (c *TavilyClient) rotateKey() error {
-	oldIndex := c.config.TavilyCurrentKeyIdx
-	_, err := c.config.RotateTavilyKey()
-	if err != nil {
-		return err
-	}
-
-	if c.onKeyRotation != nil {
-		c.onKeyRotation(oldIndex+1, c.config.TavilyCurrentKeyIdx+1, c.config.GetTavilyKeyCount())
-	}
-
-	return nil
 }
 
 // ToSearchResponse converts TavilyResponse to unified SearchResponse

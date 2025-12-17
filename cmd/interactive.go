@@ -1,3 +1,4 @@
+// Package cmd implements the CLI commands for the AI CLI application.
 package cmd
 
 import (
@@ -9,63 +10,115 @@ import (
 
 	"github.com/elk-language/go-prompt"
 	istrings "github.com/elk-language/go-prompt/strings"
+	"github.com/google/uuid"
 	"github.com/quocvuong92/ai-cli/internal/api"
 	"github.com/quocvuong92/ai-cli/internal/auth"
 	"github.com/quocvuong92/ai-cli/internal/config"
 	"github.com/quocvuong92/ai-cli/internal/display"
 	"github.com/quocvuong92/ai-cli/internal/executor"
+	"github.com/quocvuong92/ai-cli/internal/history"
 	settingspkg "github.com/quocvuong92/ai-cli/internal/settings"
 )
 
-// InteractiveSession holds the state for interactive mode
+// InteractiveSession holds the state for an interactive chat session.
+// It manages conversation history, command execution, and persistence.
 type InteractiveSession struct {
-	app         *App
-	client      api.AIClient
-	exec        *executor.Executor
-	messages    []api.Message
-	exitFlag    bool
-	inputBuffer []string // Buffer for multiline input
+	app            *App
+	client         api.AIClient
+	exec           *executor.Executor
+	messages       []api.Message
+	exitFlag       bool
+	inputBuffer    []string // Buffer for multiline input
+	history        *history.History
+	conversationID string
 }
 
-// completer provides auto-suggestions for commands
+// completer provides auto-completion suggestions for slash commands.
+// It provides context-aware suggestions based on what the user is typing.
 func (s *InteractiveSession) completer(d prompt.Document) ([]prompt.Suggest, istrings.RuneNumber, istrings.RuneNumber) {
-	// Only show suggestions when input starts with "/"
 	text := d.TextBeforeCursor()
 	endIndex := d.CurrentRuneIndex()
 	w := d.GetWordBeforeCursor()
 	startIndex := endIndex - istrings.RuneCountInString(w)
 
+	// Only show suggestions when input starts with "/"
 	if !strings.HasPrefix(text, "/") {
 		return []prompt.Suggest{}, startIndex, endIndex
 	}
 
+	// Context-aware suggestions based on command being typed
+	textLower := strings.ToLower(text)
+
+	// /model <name> - suggest available models
+	if strings.HasPrefix(textLower, "/model ") {
+		var suggestions []prompt.Suggest
+		for _, model := range s.app.cfg.AvailableModels {
+			desc := ""
+			if model == s.app.cfg.Model {
+				desc = "(current)"
+			}
+			suggestions = append(suggestions, prompt.Suggest{Text: model, Description: desc})
+		}
+		return prompt.FilterHasPrefix(suggestions, w, true), startIndex, endIndex
+	}
+
+	// /provider <name> - suggest providers
+	if strings.HasPrefix(textLower, "/provider ") {
+		suggestions := []prompt.Suggest{
+			{Text: "copilot", Description: "GitHub Copilot (free with Pro)"},
+			{Text: "azure", Description: "Azure OpenAI"},
+		}
+		return prompt.FilterHasPrefix(suggestions, w, true), startIndex, endIndex
+	}
+
+	// /web <option> - suggest web options
+	if strings.HasPrefix(textLower, "/web ") {
+		suggestions := []prompt.Suggest{
+			{Text: "on", Description: "Enable auto web search for all messages"},
+			{Text: "off", Description: "Disable auto web search"},
+			{Text: "tavily", Description: "Use Tavily search provider"},
+			{Text: "linkup", Description: "Use Linkup search provider"},
+			{Text: "brave", Description: "Use Brave search provider"},
+		}
+		return prompt.FilterHasPrefix(suggestions, w, true), startIndex, endIndex
+	}
+
+	// Main command suggestions
 	suggestions := []prompt.Suggest{
-		{Text: "/exit", Description: "Exit interactive mode"},
-		{Text: "/quit", Description: "Exit interactive mode"},
-		{Text: "/q", Description: "Exit interactive mode"},
+		// Most used commands first
+		{Text: "/model", Description: "Show/switch model (current: " + s.app.cfg.Model + ")"},
 		{Text: "/clear", Description: "Clear conversation history"},
-		{Text: "/c", Description: "Clear conversation history"},
-		{Text: "/help", Description: "Show available commands"},
-		{Text: "/h", Description: "Show available commands"},
-		{Text: "/web on", Description: "Enable auto web search"},
-		{Text: "/web off", Description: "Disable auto web search"},
-		{Text: "/web tavily", Description: "Use Tavily search provider"},
-		{Text: "/web linkup", Description: "Use Linkup search provider"},
-		{Text: "/web brave", Description: "Use Brave search provider"},
-		{Text: "/model", Description: "Show/switch model"},
-		{Text: "/provider", Description: "Show/switch provider (copilot/azure)"},
-		{Text: "/provider copilot", Description: "Switch to GitHub Copilot"},
-		{Text: "/provider azure", Description: "Switch to Azure OpenAI"},
-		{Text: "/allow-dangerous", Description: "Enable dangerous commands (with confirmation)"},
+		{Text: "/web", Description: "Web search commands"},
+		{Text: "/help", Description: "Show all available commands"},
+		{Text: "/exit", Description: "Exit interactive mode"},
+
+		// History commands
+		{Text: "/history", Description: "Show recent conversations"},
+		{Text: "/resume", Description: "Resume last conversation"},
+
+		// Provider
+		{Text: "/provider", Description: "Show/switch provider (current: " + s.app.getProviderName() + ")"},
+
+		// Permission commands
 		{Text: "/show-permissions", Description: "Show command execution permissions"},
+		{Text: "/allow-dangerous", Description: "Enable dangerous commands"},
 		{Text: "/allow", Description: "Add allow rule (e.g., /allow git:*)"},
 		{Text: "/deny", Description: "Add deny rule (e.g., /deny rm *)"},
 		{Text: "/clear-session", Description: "Clear session-only permissions"},
+
+		// Aliases
+		{Text: "/q", Description: "Exit (alias)"},
+		{Text: "/c", Description: "Clear (alias)"},
+		{Text: "/h", Description: "Help (alias)"},
 	}
 
 	return prompt.FilterHasPrefix(suggestions, w, true), startIndex, endIndex
 }
 
+// runInteractive starts the interactive chat mode with a REPL interface.
+// It initializes the AI client, sets up command completion, and handles
+// user input until the session is terminated. Supports multiline input
+// with backslash continuation and various slash commands.
 func (app *App) runInteractive() {
 	// Create AI client
 	client, err := api.NewClient(app.cfg)
@@ -73,6 +126,8 @@ func (app *App) runInteractive() {
 		display.ShowError(err.Error())
 		return
 	}
+	// Ensure client resources are cleaned up on exit
+	defer client.Close()
 
 	fmt.Println("AI CLI - Interactive Mode")
 	fmt.Printf("Model: %s\n", app.cfg.Model)
@@ -85,6 +140,13 @@ func (app *App) runInteractive() {
 	fmt.Println("End a line with \\ for multiline input")
 	fmt.Println()
 
+	// Initialize history
+	hist := history.NewHistory()
+	if err := hist.Load(); err != nil {
+		// History load failed, continue without it
+		fmt.Fprintf(os.Stderr, "Note: Could not load history: %v\n", err)
+	}
+
 	session := &InteractiveSession{
 		app:    app,
 		client: client,
@@ -92,7 +154,9 @@ func (app *App) runInteractive() {
 		messages: []api.Message{
 			{Role: "system", Content: config.DefaultSystemMessage},
 		},
-		exitFlag: false,
+		exitFlag:       false,
+		history:        hist,
+		conversationID: uuid.New().String(),
 	}
 
 	p := prompt.New(
@@ -101,15 +165,19 @@ func (app *App) runInteractive() {
 		prompt.WithPrefix("> "),
 		prompt.WithTitle("AI CLI"),
 		prompt.WithPrefixTextColor(prompt.Green),
-		prompt.WithSuggestionBGColor(prompt.DarkGray),
+		// Suggestion box styling - better contrast and visibility
+		prompt.WithSuggestionBGColor(prompt.DarkBlue),
 		prompt.WithSuggestionTextColor(prompt.White),
-		prompt.WithSelectedSuggestionBGColor(prompt.LightGray),
+		prompt.WithSelectedSuggestionBGColor(prompt.Cyan),
 		prompt.WithSelectedSuggestionTextColor(prompt.Black),
-		prompt.WithDescriptionBGColor(prompt.DarkGray),
-		prompt.WithDescriptionTextColor(prompt.White),
-		prompt.WithSelectedDescriptionBGColor(prompt.LightGray),
+		prompt.WithDescriptionBGColor(prompt.DarkBlue),
+		prompt.WithDescriptionTextColor(prompt.LightGray),
+		prompt.WithSelectedDescriptionBGColor(prompt.Cyan),
 		prompt.WithSelectedDescriptionTextColor(prompt.Black),
-		prompt.WithMaxSuggestion(10),
+		prompt.WithScrollbarBGColor(prompt.DarkGray),
+		prompt.WithScrollbarThumbColor(prompt.White),
+		// Show more suggestions at once
+		prompt.WithMaxSuggestion(15),
 		prompt.WithCompletionOnDown(),
 		prompt.WithExitChecker(func(in string, breakline bool) bool {
 			return session.exitFlag
@@ -118,6 +186,7 @@ func (app *App) runInteractive() {
 			Key: prompt.ControlC,
 			Fn: func(p *prompt.Prompt) bool {
 				fmt.Println("\nGoodbye!")
+				session.saveHistory()
 				session.exitFlag = true
 				return false
 			},
@@ -127,6 +196,7 @@ func (app *App) runInteractive() {
 			Fn: func(p *prompt.Prompt) bool {
 				if p.Buffer().Text() == "" {
 					fmt.Println("Goodbye!")
+					session.saveHistory()
 					session.exitFlag = true
 				}
 				return false
@@ -137,7 +207,29 @@ func (app *App) runInteractive() {
 	p.Run()
 }
 
-// executor handles the execution of each input line
+// saveHistory persists the current conversation to the history file.
+// Only saves if there are messages beyond the initial system prompt.
+func (s *InteractiveSession) saveHistory() {
+	if s.history == nil {
+		return
+	}
+	// Only save if there are messages beyond the system prompt
+	if len(s.messages) > 1 {
+		s.history.AddConversation(
+			s.conversationID,
+			s.app.cfg.Model,
+			s.app.getProviderName(),
+			s.messages,
+		)
+		if err := s.history.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not save history: %v\n", err)
+		}
+	}
+}
+
+// executor handles the execution of each input line in the REPL.
+// It processes multiline input (backslash continuation), slash commands,
+// web search queries, and regular chat messages with tool support.
 func (s *InteractiveSession) executor(input string) {
 	// Check if we should exit
 	if s.exitFlag {
@@ -167,7 +259,7 @@ func (s *InteractiveSession) executor(input string) {
 
 	// Handle commands (only if not in multiline mode - first line determines if it's a command)
 	if strings.HasPrefix(input, "/") {
-		if s.app.handleCommand(input, &s.messages, &s.client, s.exec) {
+		if s.app.handleCommand(input, &s.messages, &s.client, s.exec, s) {
 			s.exitFlag = true
 		}
 		return
@@ -194,7 +286,9 @@ func (s *InteractiveSession) executor(input string) {
 	fmt.Println()
 }
 
-// getProviderName returns a human-readable provider name based on actual client type
+// getProviderName returns a human-readable provider name.
+// It checks explicit provider setting first, then auto-detects based on
+// available credentials (GitHub Copilot login or Azure environment variables).
 func (app *App) getProviderName() string {
 	// Check explicit provider setting first
 	switch app.cfg.Provider {
@@ -216,18 +310,27 @@ func (app *App) getProviderName() string {
 	return "Unknown"
 }
 
-func (app *App) handleCommand(input string, messages *[]api.Message, client *api.AIClient, exec *executor.Executor) bool {
+// handleCommand processes slash commands in interactive mode.
+// Returns true if the session should exit, false otherwise.
+func (app *App) handleCommand(input string, messages *[]api.Message, client *api.AIClient, exec *executor.Executor, session *InteractiveSession) bool {
 	parts := strings.SplitN(input, " ", 2)
 	cmd := strings.ToLower(parts[0])
 
 	switch cmd {
 	case "/exit", "/quit", "/q":
 		fmt.Println("Goodbye!")
+		if session != nil {
+			session.saveHistory()
+		}
 		return true
 
 	case "/clear", "/c":
 		*messages = []api.Message{
 			{Role: "system", Content: config.DefaultSystemMessage},
+		}
+		// Start a new conversation ID when clearing
+		if session != nil {
+			session.conversationID = uuid.New().String()
 		}
 		fmt.Println("Conversation cleared.")
 
@@ -235,6 +338,8 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 		fmt.Println("\nCommands:")
 		fmt.Printf("  %-24s %s\n", "/exit, /quit, /q", "Exit interactive mode")
 		fmt.Printf("  %-24s %s\n", "/clear, /c", "Clear conversation history")
+		fmt.Printf("  %-24s %s\n", "/history", "Show recent conversations")
+		fmt.Printf("  %-24s %s\n", "/resume", "Resume last conversation")
 		fmt.Printf("  %-24s %s\n", "/web <query>", "Search web and ask about results")
 		fmt.Printf("  %-24s %s\n", "/web on", "Enable auto web search for all messages")
 		fmt.Printf("  %-24s %s\n", "/web off", "Disable auto web search")
@@ -250,6 +355,54 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 		fmt.Printf("  %-24s %s\n", "/clear-session", "Clear session-only permissions")
 		fmt.Printf("  %-24s %s\n", "/help, /h", "Show this help")
 		fmt.Println()
+
+	case "/history":
+		if session == nil || session.history == nil {
+			fmt.Println("History not available.")
+		} else {
+			conversations := session.history.GetRecentConversations(10)
+			if len(conversations) == 0 {
+				fmt.Println("No conversation history.")
+			} else {
+				fmt.Println("\nRecent conversations:")
+				for i, conv := range conversations {
+					msgCount := len(conv.Messages) - 1 // Exclude system message
+					if msgCount < 0 {
+						msgCount = 0
+					}
+					fmt.Printf("  %d. [%s] %s - %s (%d messages)\n",
+						i+1,
+						conv.UpdatedAt.Format("2006-01-02 15:04"),
+						conv.Provider,
+						conv.Model,
+						msgCount,
+					)
+				}
+				fmt.Println()
+			}
+		}
+
+	case "/resume":
+		if session == nil || session.history == nil {
+			fmt.Println("History not available.")
+		} else {
+			lastConv := session.history.GetLastConversation()
+			if lastConv == nil {
+				fmt.Println("No conversation to resume.")
+			} else {
+				*messages = make([]api.Message, len(lastConv.Messages))
+				copy(*messages, lastConv.Messages)
+				session.conversationID = lastConv.ID
+				msgCount := len(lastConv.Messages) - 1
+				if msgCount < 0 {
+					msgCount = 0
+				}
+				fmt.Printf("Resumed conversation from %s (%d messages)\n",
+					lastConv.UpdatedAt.Format("2006-01-02 15:04"),
+					msgCount,
+				)
+			}
+		}
 
 	case "/model":
 		app.handleModelCommand(parts)
@@ -328,6 +481,7 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 	return false
 }
 
+// handleModelCommand processes the /model command to show or switch models.
 func (app *App) handleModelCommand(parts []string) {
 	if len(parts) > 1 {
 		newModel := strings.TrimSpace(parts[1])
@@ -351,6 +505,8 @@ func (app *App) handleModelCommand(parts []string) {
 	}
 }
 
+// handleProviderCommand processes the /provider command to show or switch AI providers.
+// Returns true if the provider was switched (conversation history is cleared), false otherwise.
 func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool {
 	if len(parts) > 1 {
 		newProvider := strings.ToLower(strings.TrimSpace(parts[1]))
@@ -385,6 +541,8 @@ func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool
 			return false
 		}
 
+		// Close old client to stop background goroutines
+		(*client).Close()
 		*client = newClient
 
 		fmt.Printf("✓ Switched to %s\n", app.getProviderName())
@@ -399,6 +557,8 @@ func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool
 	}
 }
 
+// handleWebCommand processes the /web command for web search operations.
+// Supports: /web <query>, /web on/off, /web <provider>.
 func (app *App) handleWebCommand(parts []string, messages *[]api.Message, client api.AIClient, exec *executor.Executor) {
 	if len(parts) < 2 {
 		status := "off"
@@ -445,6 +605,8 @@ func (app *App) handleWebCommand(parts []string, messages *[]api.Message, client
 	}
 }
 
+// sendInteractiveMessage sends a message to the AI and displays the response.
+// Supports both streaming and non-streaming modes based on app configuration.
 func (app *App) sendInteractiveMessage(client api.AIClient, messages []api.Message) (string, error) {
 	if app.cfg.Stream {
 		var fullContent strings.Builder
@@ -507,6 +669,10 @@ func (app *App) sendInteractiveMessage(client api.AIClient, messages []api.Messa
 	return content, nil
 }
 
+// sendInteractiveMessageWithTools sends a message with tool/function calling support.
+// It handles the execute_command tool, processing permission checks and user confirmations
+// before executing shell commands. Continues the conversation loop until no more tool
+// calls are requested by the AI.
 func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *executor.Executor, messages *[]api.Message) (string, error) {
 	ctx := context.Background()
 	tools := api.GetDefaultTools()

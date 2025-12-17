@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // GitHub OAuth constants (from GitHub Copilot)
@@ -47,7 +49,7 @@ type GitHubAuth struct {
 func NewGitHubAuth() *GitHubAuth {
 	return &GitHubAuth{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: constants.DefaultOAuthTimeout,
 		},
 	}
 }

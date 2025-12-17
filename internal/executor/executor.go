@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/quocvuong92/ai-cli/internal/constants"
 )
 
 // Executor handles command execution with permission checking
@@ -17,7 +19,7 @@ type Executor struct {
 func NewExecutor() *Executor {
 	return &Executor{
 		permissions: NewPermissionManager(),
-		timeout:     30 * time.Second, // Default 30 second timeout
+		timeout:     constants.DefaultCommandTimeout,
 	}
 }
 
