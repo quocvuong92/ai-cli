@@ -210,6 +210,69 @@ func TestKeyRotator_Rotate_SingleKey(t *testing.T) {
 	}
 }
 
+func TestNewKeyRotatorWithKeys(t *testing.T) {
+	keys := []string{"key1", "key2", "key3"}
+	kr := NewKeyRotatorWithKeys(keys)
+
+	if kr.GetKeyCount() != 3 {
+		t.Errorf("GetKeyCount() = %d, want 3", kr.GetKeyCount())
+	}
+	if kr.GetCurrentKey() != "key1" {
+		t.Errorf("GetCurrentKey() = %q, want %q", kr.GetCurrentKey(), "key1")
+	}
+}
+
+func TestNewKeyRotatorWithKeys_Empty(t *testing.T) {
+	kr := NewKeyRotatorWithKeys(nil)
+
+	if kr.HasKeys() {
+		t.Error("HasKeys() should return false for nil keys")
+	}
+	if kr.GetCurrentKey() != "" {
+		t.Errorf("GetCurrentKey() = %q, want empty string", kr.GetCurrentKey())
+	}
+}
+
+func TestNewKeyRotatorMerged_EnvTakesPriority(t *testing.T) {
+	setEnvForTest(t, "TEST_MERGED_KEYS", "env-key1,env-key2")
+
+	configKeys := []string{"config-key1", "config-key2"}
+	kr := NewKeyRotatorMerged("TEST_MERGED_KEYS", configKeys)
+
+	// Env keys should take priority
+	if kr.GetKeyCount() != 2 {
+		t.Errorf("GetKeyCount() = %d, want 2", kr.GetKeyCount())
+	}
+	if kr.GetCurrentKey() != "env-key1" {
+		t.Errorf("GetCurrentKey() = %q, want %q (from env)", kr.GetCurrentKey(), "env-key1")
+	}
+}
+
+func TestNewKeyRotatorMerged_FallbackToConfigKeys(t *testing.T) {
+	unsetEnvForTest(t, "TEST_MERGED_KEYS_EMPTY")
+
+	configKeys := []string{"config-key1", "config-key2"}
+	kr := NewKeyRotatorMerged("TEST_MERGED_KEYS_EMPTY", configKeys)
+
+	// Should use config keys when env is empty
+	if kr.GetKeyCount() != 2 {
+		t.Errorf("GetKeyCount() = %d, want 2", kr.GetKeyCount())
+	}
+	if kr.GetCurrentKey() != "config-key1" {
+		t.Errorf("GetCurrentKey() = %q, want %q (from config)", kr.GetCurrentKey(), "config-key1")
+	}
+}
+
+func TestNewKeyRotatorMerged_BothEmpty(t *testing.T) {
+	unsetEnvForTest(t, "TEST_MERGED_KEYS_NONE")
+
+	kr := NewKeyRotatorMerged("TEST_MERGED_KEYS_NONE", nil)
+
+	if kr.HasKeys() {
+		t.Error("HasKeys() should return false when both env and config are empty")
+	}
+}
+
 // =============================================================================
 // Config.Validate() Tests
 // =============================================================================

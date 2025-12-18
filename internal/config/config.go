@@ -84,6 +84,32 @@ func NewKeyRotator(envVar string) *KeyRotator {
 	return kr
 }
 
+// NewKeyRotatorWithKeys creates a new KeyRotator from provided keys
+func NewKeyRotatorWithKeys(keys []string) *KeyRotator {
+	kr := &KeyRotator{
+		keys:       keys,
+		currentIdx: 0,
+	}
+	if len(keys) > 0 {
+		kr.currentKey = keys[0]
+	}
+	return kr
+}
+
+// NewKeyRotatorMerged creates a KeyRotator by merging env vars with config file keys
+// Environment variable keys take priority (come first)
+func NewKeyRotatorMerged(envVar string, configKeys []string) *KeyRotator {
+	envKeys := getKeysFromEnv(envVar)
+
+	// If env keys exist, use them (they have priority)
+	if len(envKeys) > 0 {
+		return NewKeyRotatorWithKeys(envKeys)
+	}
+
+	// Otherwise use config file keys
+	return NewKeyRotatorWithKeys(configKeys)
+}
+
 // GetCurrentKey returns the current active API key
 func (kr *KeyRotator) GetCurrentKey() string {
 	return kr.currentKey
@@ -155,6 +181,11 @@ type Config struct {
 	TavilyKeys *KeyRotator
 	LinkupKeys *KeyRotator
 	BraveKeys  *KeyRotator
+
+	// Config file keys (used during initialization before KeyRotators are created)
+	tavilyKeysFromFile []string
+	linkupKeysFromFile []string
+	braveKeysFromFile  []string
 
 	// Web search provider selection
 	WebSearchProvider string // "tavily", "linkup", or "brave"
@@ -269,10 +300,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Initialize key rotators
-	c.TavilyKeys = NewKeyRotator(EnvTavilyAPIKeys)
-	c.LinkupKeys = NewKeyRotator(EnvLinkupAPIKeys)
-	c.BraveKeys = NewKeyRotator(EnvBraveAPIKeys)
+	// Initialize key rotators (env vars take priority over config file keys)
+	c.TavilyKeys = NewKeyRotatorMerged(EnvTavilyAPIKeys, c.tavilyKeysFromFile)
+	c.LinkupKeys = NewKeyRotatorMerged(EnvLinkupAPIKeys, c.linkupKeysFromFile)
+	c.BraveKeys = NewKeyRotatorMerged(EnvBraveAPIKeys, c.braveKeysFromFile)
 
 	// Set web search provider (default to tavily, or auto-detect based on available keys)
 	if c.WebSearchProvider == "" {

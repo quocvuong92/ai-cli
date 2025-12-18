@@ -157,6 +157,16 @@ func (c *Config) ApplyFileConfig(fc *FileConfig) {
 		if c.WebSearchProvider == "" && fc.WebSearch.Provider != "" {
 			c.WebSearchProvider = fc.WebSearch.Provider
 		}
+		// Store keys from config file for later use in Validate()
+		if len(fc.WebSearch.TavilyKeys) > 0 {
+			c.tavilyKeysFromFile = fc.WebSearch.TavilyKeys
+		}
+		if len(fc.WebSearch.LinkupKeys) > 0 {
+			c.linkupKeysFromFile = fc.WebSearch.LinkupKeys
+		}
+		if len(fc.WebSearch.BraveKeys) > 0 {
+			c.braveKeysFromFile = fc.WebSearch.BraveKeys
+		}
 	}
 
 	// Apply defaults (these are applied unless explicitly overridden by flags)
