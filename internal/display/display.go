@@ -1,6 +1,7 @@
 package display
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -260,11 +261,20 @@ func AskCommandConfirmationExtended(command, reasoning string) ApprovalChoice {
 	}
 	fmt.Printf("\nAllow? [y]es once / [s]ession / [a]lways / [n]o: ")
 
-	// Read single character from stdin
-	var buf [1]byte
-	os.Stdin.Read(buf[:])
-	response := strings.ToLower(string(buf[0]))
-	fmt.Println() // New line after input
+	// Use bufio.Reader to properly read the entire line including the newline character
+	// This prevents leftover characters from staying in the stdin buffer
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return ApprovalDenied
+	}
+
+	// Trim whitespace and get the first character
+	response := strings.TrimSpace(line)
+	if len(response) == 0 {
+		return ApprovalDenied
+	}
+	response = strings.ToLower(string(response[0]))
 
 	switch response {
 	case "y":
