@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/quocvuong92/ai-cli/internal/constants"
 )
+
+// Token cache file name
+const tokenCacheFileName = "copilot-token-cache.json"
 
 // Copilot API constants
 const (
@@ -29,6 +34,12 @@ type CopilotTokenResponse struct {
 	RefreshIn int    `json:"refresh_in"`
 }
 
+// TokenCache represents the cached Copilot token on disk
+type TokenCache struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
 // TokenManager handles Copilot token lifecycle
 type TokenManager struct {
 	httpClient    *http.Client
@@ -39,14 +50,84 @@ type TokenManager struct {
 	cancelRefresh context.CancelFunc
 }
 
-// NewTokenManager creates a new TokenManager with the given GitHub token
+// NewTokenManager creates a new TokenManager with the given GitHub token.
+// It attempts to load a cached token from disk for fast startup.
 func NewTokenManager(githubToken string) *TokenManager {
-	return &TokenManager{
+	tm := &TokenManager{
 		httpClient: &http.Client{
 			Timeout: constants.DefaultOAuthTimeout,
 		},
 		githubToken: githubToken,
 	}
+
+	// Try to load cached token for fast startup
+	tm.loadCachedToken()
+
+	return tm
+}
+
+// getTokenCachePath returns the path to the token cache file
+func getTokenCachePath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, ".local", "share", "ai-cli", tokenCacheFileName)
+}
+
+// loadCachedToken attempts to load a valid token from disk cache
+func (tm *TokenManager) loadCachedToken() {
+	cachePath := getTokenCachePath()
+	if cachePath == "" {
+		return
+	}
+
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return // Cache doesn't exist or can't be read
+	}
+
+	var cache TokenCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return // Invalid cache format
+	}
+
+	expiresAt := time.Unix(cache.ExpiresAt, 0)
+
+	// Check if token is still valid (with 60 second buffer)
+	if cache.Token != "" && time.Now().Add(60*time.Second).Before(expiresAt) {
+		tm.mu.Lock()
+		tm.copilotToken = cache.Token
+		tm.expiresAt = expiresAt
+		tm.mu.Unlock()
+	}
+}
+
+// saveTokenCache saves the token to disk cache
+func (tm *TokenManager) saveTokenCache(token string, expiresAt int64) {
+	cachePath := getTokenCachePath()
+	if cachePath == "" {
+		return
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(cachePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+
+	cache := TokenCache{
+		Token:     token,
+		ExpiresAt: expiresAt,
+	}
+
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return
+	}
+
+	// Write with secure permissions (owner read/write only)
+	_ = os.WriteFile(cachePath, data, 0600)
 }
 
 // GetCopilotToken returns a valid Copilot token, refreshing if necessary
@@ -116,6 +197,9 @@ func (tm *TokenManager) refreshToken(ctx context.Context) (string, error) {
 
 	tm.copilotToken = tokenResp.Token
 	tm.expiresAt = time.Unix(tokenResp.ExpiresAt, 0)
+
+	// Save to disk cache for fast startup next time
+	tm.saveTokenCache(tokenResp.Token, tokenResp.ExpiresAt)
 
 	return tm.copilotToken, nil
 }
