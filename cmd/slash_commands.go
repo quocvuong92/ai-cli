@@ -216,7 +216,7 @@ func (app *App) resumeConversation(session *InteractiveSession, messages *[]api.
 		}
 	}
 
-	fmt.Println("--- End of conversation history ---\n")
+	fmt.Println("--- End of conversation history ---")
 }
 
 // handleModelCommand processes the /model command to show or switch models.
