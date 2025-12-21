@@ -64,7 +64,7 @@ func (app *App) optimizeSearchQuery(query string, messages []api.Message, client
 	return optimizedQuery, nil
 }
 
-func (app *App) handleWebSearch(query string, messages *[]api.Message, client api.AIClient, exec *executor.Executor) {
+func (app *App) handleWebSearch(query string, messages *[]api.Message, client api.AIClient, exec *executor.Executor, interruptCtx *InterruptibleContext) {
 	// Optimize search query using LLM if there's conversation context
 	optimizedQuery := query
 	if len(*messages) > 1 { // More than just system message
@@ -100,8 +100,14 @@ func (app *App) handleWebSearch(query string, messages *[]api.Message, client ap
 
 	// Send request with tools support
 	fmt.Println()
-	response, err := app.sendInteractiveMessageWithTools(client, exec, messages)
+	response, err := app.sendInteractiveMessageWithTools(client, exec, messages, interruptCtx)
 	if err != nil {
+		// Check if it was a cancellation
+		if err == context.Canceled {
+			// Remove the messages we added on cancellation
+			*messages = (*messages)[:len(*messages)-2]
+			return
+		}
 		display.ShowError(err.Error())
 		// Remove the messages we added on error
 		*messages = (*messages)[:len(*messages)-2]

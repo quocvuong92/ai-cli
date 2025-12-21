@@ -3,10 +3,12 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/elk-language/go-prompt"
 	istrings "github.com/elk-language/go-prompt/strings"
@@ -17,7 +19,6 @@ import (
 	"github.com/quocvuong92/ai-cli/internal/display"
 	"github.com/quocvuong92/ai-cli/internal/executor"
 	"github.com/quocvuong92/ai-cli/internal/history"
-	settingspkg "github.com/quocvuong92/ai-cli/internal/settings"
 )
 
 // InteractiveSession holds the state for an interactive chat session.
@@ -31,6 +32,64 @@ type InteractiveSession struct {
 	inputBuffer    []string // Buffer for multiline input
 	history        *history.History
 	conversationID string
+	interruptCtx   *InterruptibleContext // For graceful Ctrl+C cancellation
+}
+
+// InterruptibleContext manages a cancellable context for operations.
+// It allows Ctrl+C to cancel the current operation instead of exiting the CLI.
+type InterruptibleContext struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	active bool
+}
+
+// NewInterruptibleContext creates a new interruptible context manager.
+func NewInterruptibleContext() *InterruptibleContext {
+	return &InterruptibleContext{}
+}
+
+// Start begins an interruptible operation, returning a context that will be
+// cancelled if Ctrl+C is pressed during the operation.
+func (ic *InterruptibleContext) Start() context.Context {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
+	ic.ctx, ic.cancel = context.WithCancel(context.Background())
+	ic.active = true
+
+	// Set up signal handler for this operation
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGINT)
+
+	go func() {
+		select {
+		case <-sigChan:
+			ic.mu.Lock()
+			if ic.active {
+				fmt.Fprintf(os.Stderr, "\n⚠️  Operation cancelled\n")
+				ic.cancel()
+			}
+			ic.mu.Unlock()
+		case <-ic.ctx.Done():
+			// Context completed normally
+		}
+		signal.Stop(sigChan)
+		close(sigChan)
+	}()
+
+	return ic.ctx
+}
+
+// Stop ends the interruptible operation and cleans up.
+func (ic *InterruptibleContext) Stop() {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
+	ic.active = false
+	if ic.cancel != nil {
+		ic.cancel()
+	}
 }
 
 // completer provides auto-completion suggestions for slash commands.
@@ -157,6 +216,7 @@ func (app *App) runInteractive() {
 		exitFlag:       false,
 		history:        hist,
 		conversationID: uuid.New().String(),
+		interruptCtx:   NewInterruptibleContext(),
 	}
 
 	p := prompt.New(
@@ -267,15 +327,21 @@ func (s *InteractiveSession) executor(input string) {
 
 	// Web search mode: automatically search for every message
 	if s.app.cfg.WebSearch {
-		s.app.handleWebSearch(input, &s.messages, s.client, s.exec)
+		s.app.handleWebSearch(input, &s.messages, s.client, s.exec, s.interruptCtx)
 		return
 	}
 
 	// Regular chat with tool support
 	s.messages = append(s.messages, api.Message{Role: "user", Content: input})
 	fmt.Println()
-	response, err := s.app.sendInteractiveMessageWithTools(s.client, s.exec, &s.messages)
+	response, err := s.app.sendInteractiveMessageWithTools(s.client, s.exec, &s.messages, s.interruptCtx)
 	if err != nil {
+		// Check if it was a cancellation
+		if err == context.Canceled {
+			// Remove the user message since we didn't complete
+			s.messages = s.messages[:len(s.messages)-1]
+			return
+		}
 		display.ShowError(err.Error())
 		s.messages = s.messages[:len(s.messages)-1]
 		return
@@ -308,301 +374,6 @@ func (app *App) getProviderName() string {
 	}
 
 	return "Unknown"
-}
-
-// handleCommand processes slash commands in interactive mode.
-// Returns true if the session should exit, false otherwise.
-func (app *App) handleCommand(input string, messages *[]api.Message, client *api.AIClient, exec *executor.Executor, session *InteractiveSession) bool {
-	parts := strings.SplitN(input, " ", 2)
-	cmd := strings.ToLower(parts[0])
-
-	switch cmd {
-	case "/exit", "/quit", "/q":
-		fmt.Println("Goodbye!")
-		if session != nil {
-			session.saveHistory()
-		}
-		return true
-
-	case "/clear", "/c":
-		*messages = []api.Message{
-			{Role: "system", Content: config.DefaultSystemMessage},
-		}
-		// Start a new conversation ID when clearing
-		if session != nil {
-			session.conversationID = uuid.New().String()
-		}
-		fmt.Println("Conversation cleared.")
-
-	case "/help", "/h":
-		fmt.Println("\nCommands:")
-		fmt.Printf("  %-24s %s\n", "/exit, /quit, /q", "Exit interactive mode")
-		fmt.Printf("  %-24s %s\n", "/clear, /c", "Clear conversation history")
-		fmt.Printf("  %-24s %s\n", "/history", "Show recent conversations")
-		fmt.Printf("  %-24s %s\n", "/resume", "Resume last conversation")
-		fmt.Printf("  %-24s %s\n", "/web <query>", "Search web and ask about results")
-		fmt.Printf("  %-24s %s\n", "/web on", "Enable auto web search for all messages")
-		fmt.Printf("  %-24s %s\n", "/web off", "Disable auto web search")
-		fmt.Printf("  %-24s %s\n", "/web <provider>", "Switch provider (tavily, linkup, brave)")
-		fmt.Printf("  %-24s %s\n", "/model <name>", "Switch model")
-		fmt.Printf("  %-24s %s\n", "/model", "Show current model")
-		fmt.Printf("  %-24s %s\n", "/provider <name>", "Switch AI provider (copilot, azure)")
-		fmt.Printf("  %-24s %s\n", "/provider", "Show current provider")
-		fmt.Printf("  %-24s %s\n", "/allow-dangerous", "Allow dangerous commands (with confirmation)")
-		fmt.Printf("  %-24s %s\n", "/show-permissions", "Show permission settings and rules")
-		fmt.Printf("  %-24s %s\n", "/allow <pattern>", "Add persistent allow rule (e.g., git:*)")
-		fmt.Printf("  %-24s %s\n", "/deny <pattern>", "Add persistent deny rule (takes precedence)")
-		fmt.Printf("  %-24s %s\n", "/clear-session", "Clear session-only permissions")
-		fmt.Printf("  %-24s %s\n", "/help, /h", "Show this help")
-		fmt.Println()
-
-	case "/history":
-		if session == nil || session.history == nil {
-			fmt.Println("History not available.")
-		} else {
-			conversations := session.history.GetRecentConversations(10)
-			if len(conversations) == 0 {
-				fmt.Println("No conversation history.")
-			} else {
-				fmt.Println("\nRecent conversations:")
-				for i, conv := range conversations {
-					msgCount := len(conv.Messages) - 1 // Exclude system message
-					if msgCount < 0 {
-						msgCount = 0
-					}
-					fmt.Printf("  %d. [%s] %s - %s (%d messages)\n",
-						i+1,
-						conv.UpdatedAt.Format("2006-01-02 15:04"),
-						conv.Provider,
-						conv.Model,
-						msgCount,
-					)
-				}
-				fmt.Println()
-			}
-		}
-
-	case "/resume":
-		if session == nil || session.history == nil {
-			fmt.Println("History not available.")
-		} else {
-			lastConv := session.history.GetLastConversation()
-			if lastConv == nil {
-				fmt.Println("No conversation to resume.")
-			} else {
-				*messages = make([]api.Message, len(lastConv.Messages))
-				copy(*messages, lastConv.Messages)
-				session.conversationID = lastConv.ID
-				msgCount := len(lastConv.Messages) - 1
-				if msgCount < 0 {
-					msgCount = 0
-				}
-				fmt.Printf("Resumed conversation from %s (%d messages)\n",
-					lastConv.UpdatedAt.Format("2006-01-02 15:04"),
-					msgCount,
-				)
-			}
-		}
-
-	case "/model":
-		app.handleModelCommand(parts)
-
-	case "/provider":
-		if app.handleProviderCommand(parts, client) {
-			// Provider switched, clear conversation history
-			*messages = []api.Message{
-				{Role: "system", Content: config.DefaultSystemMessage},
-			}
-		}
-
-	case "/web":
-		app.handleWebCommand(parts, messages, *client, exec)
-
-	case "/allow-dangerous":
-		exec.GetPermissionManager().EnableDangerous()
-		fmt.Println("⚠️  Dangerous commands enabled for this session")
-		fmt.Println("Note: You will still be asked to confirm before execution")
-
-	case "/show-permissions":
-		settings := exec.GetPermissionManager().GetSettings()
-		display.ShowPermissionSettings(settings)
-		// Show rules
-		allowRules := exec.GetPermissionManager().GetAllowRules()
-		denyRules := exec.GetPermissionManager().GetDenyRules()
-		var allowStrs, denyStrs []string
-		for _, r := range allowRules {
-			allowStrs = append(allowStrs, settingspkg.FormatPattern(r))
-		}
-		for _, r := range denyRules {
-			denyStrs = append(denyStrs, settingspkg.FormatPattern(r))
-		}
-		display.ShowPermissionRules(allowStrs, denyStrs)
-
-	case "/allow":
-		if len(parts) > 1 {
-			pattern := strings.TrimSpace(parts[1])
-			if err := exec.GetPermissionManager().AddPatternRule(pattern, false); err != nil {
-				display.ShowError(fmt.Sprintf("Failed to add allow rule: %v", err))
-			} else {
-				fmt.Printf("✓ Added allow rule: %s\n", pattern)
-			}
-		} else {
-			fmt.Println("Usage: /allow <pattern>")
-			fmt.Println("Examples:")
-			fmt.Println("  /allow git:*         Allow all git commands")
-			fmt.Println("  /allow npm run *     Allow npm run with any script")
-			fmt.Println("  /allow ls -la        Allow specific command")
-		}
-
-	case "/deny":
-		if len(parts) > 1 {
-			pattern := strings.TrimSpace(parts[1])
-			if err := exec.GetPermissionManager().AddPatternRule(pattern, true); err != nil {
-				display.ShowError(fmt.Sprintf("Failed to add deny rule: %v", err))
-			} else {
-				fmt.Printf("✓ Added deny rule: %s (takes precedence over allow rules)\n", pattern)
-			}
-		} else {
-			fmt.Println("Usage: /deny <pattern>")
-			fmt.Println("Examples:")
-			fmt.Println("  /deny rm *           Block all rm commands")
-			fmt.Println("  /deny curl *         Block all curl commands")
-		}
-
-	case "/clear-session":
-		exec.GetPermissionManager().ClearSessionAllowlist()
-		fmt.Println("Session allowlist cleared.")
-
-	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
-		fmt.Println("Type /help for available commands")
-	}
-
-	return false
-}
-
-// handleModelCommand processes the /model command to show or switch models.
-func (app *App) handleModelCommand(parts []string) {
-	if len(parts) > 1 {
-		newModel := strings.TrimSpace(parts[1])
-		if newModel == "" {
-			fmt.Printf("Current model: %s\n", app.cfg.Model)
-			if len(app.cfg.AvailableModels) > 0 {
-				fmt.Printf("Available: %s\n", app.cfg.GetAvailableModelsString())
-			}
-		} else if len(app.cfg.AvailableModels) > 0 && !app.cfg.ValidateModel(newModel) {
-			fmt.Printf("Invalid model: %s\n", newModel)
-			fmt.Printf("Available: %s\n", app.cfg.GetAvailableModelsString())
-		} else {
-			app.cfg.Model = newModel
-			fmt.Printf("Switched to model: %s\n", app.cfg.Model)
-		}
-	} else {
-		fmt.Printf("Current model: %s\n", app.cfg.Model)
-		if len(app.cfg.AvailableModels) > 0 {
-			fmt.Printf("Available: %s\n", app.cfg.GetAvailableModelsString())
-		}
-	}
-}
-
-// handleProviderCommand processes the /provider command to show or switch AI providers.
-// Returns true if the provider was switched (conversation history is cleared), false otherwise.
-func (app *App) handleProviderCommand(parts []string, client *api.AIClient) bool {
-	if len(parts) > 1 {
-		newProvider := strings.ToLower(strings.TrimSpace(parts[1]))
-		if newProvider == "" {
-			fmt.Printf("Current provider: %s\n", app.getProviderName())
-			fmt.Println("Available: copilot, azure")
-			return false
-		}
-
-		if newProvider != "copilot" && newProvider != "azure" && newProvider != "github" {
-			fmt.Printf("Invalid provider: %s\n", newProvider)
-			fmt.Println("Available: copilot, azure")
-			return false
-		}
-
-		// Update config
-		app.cfg.Provider = newProvider
-
-		// Reset model to empty so Validate() will set it to the first available model
-		app.cfg.Model = ""
-
-		// Update available models based on new provider
-		if err := app.cfg.Validate(); err != nil {
-			display.ShowError(fmt.Sprintf("Configuration error: %v", err))
-			return false
-		}
-
-		// Recreate client with new provider
-		newClient, err := api.NewClient(app.cfg)
-		if err != nil {
-			display.ShowError(fmt.Sprintf("Failed to switch provider: %v", err))
-			return false
-		}
-
-		// Close old client to stop background goroutines
-		(*client).Close()
-		*client = newClient
-
-		fmt.Printf("✓ Switched to %s\n", app.getProviderName())
-		fmt.Printf("  Model: %s\n", app.cfg.Model)
-		fmt.Printf("  Available models: %s\n", app.cfg.GetAvailableModelsString())
-		fmt.Println("  Conversation history cleared")
-		return true
-	} else {
-		fmt.Printf("Current provider: %s\n", app.getProviderName())
-		fmt.Println("Available: copilot, azure")
-		return false
-	}
-}
-
-// handleWebCommand processes the /web command for web search operations.
-// Supports: /web <query>, /web on/off, /web <provider>.
-func (app *App) handleWebCommand(parts []string, messages *[]api.Message, client api.AIClient, exec *executor.Executor) {
-	if len(parts) < 2 {
-		status := "off"
-		if app.cfg.WebSearch {
-			status = fmt.Sprintf("on (provider: %s)", app.cfg.WebSearchProvider)
-		}
-		fmt.Printf("Web search: %s\n", status)
-		fmt.Println("Available providers: tavily, linkup, brave")
-		fmt.Println("Usage: /web <query> | /web on | /web off | /web provider <name>")
-		return
-	}
-
-	arg := strings.TrimSpace(parts[1])
-	switch strings.ToLower(arg) {
-	case "on":
-		app.cfg.WebSearch = true
-		fmt.Printf("Web search enabled (provider: %s).\n", app.cfg.WebSearchProvider)
-	case "off":
-		app.cfg.WebSearch = false
-		fmt.Println("Web search disabled.")
-	case "provider":
-		// Check if there's a provider name after "provider"
-		providerParts := strings.SplitN(parts[1], " ", 2)
-		if len(providerParts) > 1 {
-			newProvider := strings.ToLower(strings.TrimSpace(providerParts[1]))
-			if newProvider == "tavily" || newProvider == "linkup" || newProvider == "brave" {
-				app.cfg.WebSearchProvider = newProvider
-				fmt.Printf("Web search provider changed to: %s\n", app.cfg.WebSearchProvider)
-			} else {
-				fmt.Printf("Invalid provider: %s\n", newProvider)
-				fmt.Println("Available providers: tavily, linkup, brave")
-			}
-		} else {
-			fmt.Printf("Current provider: %s\n", app.cfg.WebSearchProvider)
-			fmt.Println("Available providers: tavily, linkup, brave")
-			fmt.Println("Usage: /web provider <name>")
-		}
-	case "tavily", "linkup", "brave":
-		// Allow shorthand: /web tavily, /web linkup, /web brave
-		app.cfg.WebSearchProvider = strings.ToLower(arg)
-		fmt.Printf("Web search provider changed to: %s\n", app.cfg.WebSearchProvider)
-	default:
-		app.handleWebSearch(arg, messages, client, exec)
-	}
 }
 
 // sendInteractiveMessage sends a message to the AI and displays the response.
@@ -673,8 +444,11 @@ func (app *App) sendInteractiveMessage(client api.AIClient, messages []api.Messa
 // It handles the execute_command tool, processing permission checks and user confirmations
 // before executing shell commands. Continues the conversation loop until no more tool
 // calls are requested by the AI.
-func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *executor.Executor, messages *[]api.Message) (string, error) {
-	ctx := context.Background()
+func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *executor.Executor, messages *[]api.Message, interruptCtx *InterruptibleContext) (string, error) {
+	// Start interruptible context - Ctrl+C will cancel this operation
+	ctx := interruptCtx.Start()
+	defer interruptCtx.Stop()
+
 	tools := api.GetDefaultTools()
 
 	// Keep calling the API until there are no more tool calls
@@ -757,74 +531,12 @@ func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *execu
 
 			// Process each tool call
 			for _, toolCall := range toolCalls {
-				if toolCall.Function.Name == "execute_command" {
-					// Parse arguments
-					var args struct {
-						Command   string `json:"command"`
-						Reasoning string `json:"reasoning"`
-					}
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-						display.ShowError(fmt.Sprintf("Failed to parse tool arguments: %v", err))
-						continue
-					}
-
-					// Check permission
-					allowed, needsConfirm, reason := exec.GetPermissionManager().CheckPermission(args.Command)
-
-					var result *executor.ExecutionResult
-					var toolResult string
-
-					if !allowed && !needsConfirm {
-						// Blocked
-						display.ShowCommandBlocked(args.Command, reason)
-						toolResult = fmt.Sprintf("Command blocked: %s", reason)
-					} else {
-						// Ask for confirmation if needed
-						if needsConfirm {
-							choice := display.AskCommandConfirmationExtended(args.Command, args.Reasoning)
-							if choice == display.ApprovalDenied {
-								toolResult = "Command execution denied by user"
-								*messages = append(*messages, api.Message{
-									Role:       "tool",
-									Content:    toolResult,
-									ToolCallID: toolCall.ID,
-								})
-								continue
-							}
-							// Handle different approval types
-							switch choice {
-							case display.ApprovalSession:
-								_ = exec.GetPermissionManager().AddToAllowlist(args.Command, executor.ApprovalSession)
-							case display.ApprovalAlways:
-								if err := exec.GetPermissionManager().AddToAllowlist(args.Command, executor.ApprovalAlways); err != nil {
-									fmt.Fprintf(os.Stderr, "Warning: Failed to save permission: %v\n", err)
-								}
-							}
-						}
-
-						// Execute the command
-						display.ShowCommandExecuting(args.Command)
-						result, err = exec.Execute(ctx, args.Command)
-
-						if err != nil || !result.IsSuccess() {
-							display.ShowCommandError(args.Command, result.Error)
-							toolResult = result.FormatResult()
-						} else {
-							display.ShowCommandOutput(result.Output)
-							toolResult = result.Output
-							if toolResult == "" {
-								toolResult = "Command executed successfully (no output)"
-							}
-						}
-					}
-
-					// Add tool result to messages
-					*messages = append(*messages, api.Message{
-						Role:       "tool",
-						Content:    toolResult,
-						ToolCallID: toolCall.ID,
-					})
-				}
+				toolResult := app.processToolCall(toolCall, exec, ctx)
+				*messages = append(*messages, api.Message{
+					Role:       "tool",
+					Content:    toolResult,
+					ToolCallID: toolCall.ID,
+				})
 			}
 
 			// Continue loop to get AI's response to the tool results
