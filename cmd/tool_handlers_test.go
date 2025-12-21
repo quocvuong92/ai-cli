@@ -404,7 +404,10 @@ func TestProcessToolCall(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := makeToolCall(tt.toolName, tt.args)
 
-			result := app.processToolCall(tc, exec, ctx)
+			// Create a mock session for processToolCall
+			session := &InteractiveSession{}
+
+			result := app.processToolCall(tc, exec, ctx, session)
 
 			if !strings.Contains(result, tt.wantContain) {
 				t.Errorf("Expected result to contain %q, got %q", tt.wantContain, result)
@@ -420,6 +423,72 @@ func TestHandleReadFile_InvalidJSON(t *testing.T) {
 	tc := makeToolCallRaw("read_file", "invalid json{")
 
 	result := app.handleReadFile(tc)
+
+	if !strings.Contains(result, "Error parsing") {
+		t.Errorf("Expected JSON parsing error, got %q", result)
+	}
+}
+
+// TestHandleUpdatePlan tests the update_plan tool handler
+func TestHandleUpdatePlan(t *testing.T) {
+	app := newTestApp()
+	session := &InteractiveSession{}
+
+	tests := []struct {
+		name        string
+		args        map[string]interface{}
+		wantContain string
+		wantItems   int
+	}{
+		{
+			name: "create plan with items",
+			args: map[string]interface{}{
+				"title": "Test Plan",
+				"items": []map[string]interface{}{
+					{"description": "Task 1", "status": "pending"},
+					{"description": "Task 2", "status": "in_progress"},
+					{"description": "Task 3", "status": "completed"},
+				},
+			},
+			wantContain: "Plan updated: Test Plan",
+			wantItems:   3,
+		},
+		{
+			name: "empty plan",
+			args: map[string]interface{}{
+				"title": "Empty Plan",
+				"items": []map[string]interface{}{},
+			},
+			wantContain: "Plan updated: Empty Plan (0 items)",
+			wantItems:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := makeToolCall("update_plan", tt.args)
+
+			result := app.handleUpdatePlan(tc, session)
+
+			if !strings.Contains(result, tt.wantContain) {
+				t.Errorf("Expected result to contain %q, got %q", tt.wantContain, result)
+			}
+
+			if session.currentPlan != nil && len(session.currentPlan.Items) != tt.wantItems {
+				t.Errorf("Expected %d items, got %d", tt.wantItems, len(session.currentPlan.Items))
+			}
+		})
+	}
+}
+
+// TestHandleUpdatePlan_InvalidJSON tests handling of invalid JSON for update_plan
+func TestHandleUpdatePlan_InvalidJSON(t *testing.T) {
+	app := newTestApp()
+	session := &InteractiveSession{}
+
+	tc := makeToolCallRaw("update_plan", "invalid json{")
+
+	result := app.handleUpdatePlan(tc, session)
 
 	if !strings.Contains(result, "Error parsing") {
 		t.Errorf("Expected JSON parsing error, got %q", result)

@@ -3,6 +3,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/google/uuid"
@@ -78,6 +80,18 @@ func (app *App) handleCommand(input string, messages *[]api.Message, client *api
 		exec.GetPermissionManager().ClearSessionAllowlist()
 		fmt.Println("Session allowlist cleared.")
 
+	case "/diff":
+		app.handleDiffCommand()
+
+	case "/commit":
+		app.handleCommitCommand(session)
+
+	case "/amend":
+		app.handleAmendCommand(session)
+
+	case "/plan":
+		app.handlePlanCommand(session)
+
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		fmt.Println("Type /help for available commands")
@@ -101,6 +115,14 @@ func (app *App) showHelp() {
 	fmt.Printf("  %-24s %s\n", "/model", "Show current model")
 	fmt.Printf("  %-24s %s\n", "/provider <name>", "Switch AI provider (copilot, azure)")
 	fmt.Printf("  %-24s %s\n", "/provider", "Show current provider")
+	fmt.Println()
+	fmt.Println("Git commands:")
+	fmt.Printf("  %-24s %s\n", "/diff", "Show current git changes (staged/unstaged)")
+	fmt.Printf("  %-24s %s\n", "/commit", "AI-generate commit message and commit")
+	fmt.Printf("  %-24s %s\n", "/amend", "AI-improve last commit message")
+	fmt.Printf("  %-24s %s\n", "/plan", "Show current task plan/checklist")
+	fmt.Println()
+	fmt.Println("Permission commands:")
 	fmt.Printf("  %-24s %s\n", "/allow-dangerous", "Allow dangerous commands (with confirmation)")
 	fmt.Printf("  %-24s %s\n", "/show-permissions", "Show permission settings and rules")
 	fmt.Printf("  %-24s %s\n", "/allow <pattern>", "Add persistent allow rule (e.g., git:*)")
@@ -286,7 +308,7 @@ func (app *App) handleWebCommand(parts []string, messages *[]api.Message, client
 		app.cfg.WebSearchProvider = strings.ToLower(arg)
 		fmt.Printf("Web search provider changed to: %s\n", app.cfg.WebSearchProvider)
 	default:
-		app.handleWebSearch(arg, messages, client, exec, session.interruptCtx)
+		app.handleWebSearch(arg, messages, client, exec, session)
 	}
 }
 
@@ -341,4 +363,192 @@ func (app *App) handleDenyCommand(parts []string, exec *executor.Executor) {
 		fmt.Println("  /deny rm *           Block all rm commands")
 		fmt.Println("  /deny curl *         Block all curl commands")
 	}
+}
+
+// handleDiffCommand shows current git changes.
+func (app *App) handleDiffCommand() {
+	// Check if we're in a git repo
+	if !isGitRepo() {
+		fmt.Println("Not a git repository.")
+		return
+	}
+
+	// Show staged changes first
+	stagedOutput, _ := exec.Command("git", "diff", "--staged", "--stat").Output()
+	if len(stagedOutput) > 0 {
+		fmt.Println("📦 Staged changes:")
+		fmt.Println(string(stagedOutput))
+	}
+
+	// Show unstaged changes
+	unstagedOutput, _ := exec.Command("git", "diff", "--stat").Output()
+	if len(unstagedOutput) > 0 {
+		fmt.Println("📝 Unstaged changes:")
+		fmt.Println(string(unstagedOutput))
+	}
+
+	// Show untracked files
+	untrackedOutput, _ := exec.Command("git", "ls-files", "--others", "--exclude-standard").Output()
+	if len(untrackedOutput) > 0 {
+		fmt.Println("❓ Untracked files:")
+		fmt.Println(string(untrackedOutput))
+	}
+
+	if len(stagedOutput) == 0 && len(unstagedOutput) == 0 && len(untrackedOutput) == 0 {
+		fmt.Println("No changes detected.")
+	}
+}
+
+// handleCommitCommand generates a commit message using AI and commits.
+func (app *App) handleCommitCommand(session *InteractiveSession) {
+	if !isGitRepo() {
+		fmt.Println("Not a git repository.")
+		return
+	}
+
+	// Get the diff - prefer staged, fall back to unstaged
+	diff, _ := exec.Command("git", "diff", "--staged").Output()
+	if len(diff) == 0 {
+		diff, _ = exec.Command("git", "diff").Output()
+		if len(diff) == 0 {
+			fmt.Println("No changes to commit.")
+			return
+		}
+		// Stage all changes
+		fmt.Println("No staged changes. Staging all changes...")
+		if _, err := exec.Command("git", "add", "-A").Output(); err != nil {
+			display.ShowError(fmt.Sprintf("Failed to stage changes: %v", err))
+			return
+		}
+		diff, _ = exec.Command("git", "diff", "--staged").Output()
+	}
+
+	// Truncate diff if too long (keep under 8K for context)
+	diffStr := string(diff)
+	if len(diffStr) > 8000 {
+		diffStr = diffStr[:8000] + "\n... (truncated)"
+	}
+
+	// Ask AI to generate commit message
+	fmt.Println("🤖 Generating commit message...")
+
+	prompt := fmt.Sprintf(`Generate a concise git commit message for these changes. Follow conventional commits format (feat:, fix:, docs:, refactor:, etc.). Be specific but brief. Only output the commit message, nothing else.
+
+Diff:
+%s`, diffStr)
+
+	// Send to AI
+	resp, err := session.client.QueryWithHistory([]api.Message{
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		display.ShowError(fmt.Sprintf("Failed to generate message: %v", err))
+		return
+	}
+
+	commitMsg := strings.TrimSpace(resp.GetContent())
+	fmt.Printf("\n📝 Suggested commit message:\n%s\n\n", commitMsg)
+
+	// Ask for confirmation
+	fmt.Print("Commit with this message? [y]es / [e]dit / [n]o: ")
+	var response string
+	fmt.Scanln(&response)
+	response = strings.ToLower(strings.TrimSpace(response))
+
+	switch response {
+	case "y", "yes":
+		output, err := exec.Command("git", "commit", "-m", commitMsg).CombinedOutput()
+		if err != nil {
+			display.ShowError(fmt.Sprintf("Commit failed: %v\n%s", err, string(output)))
+			return
+		}
+		fmt.Println("✓ Committed successfully!")
+		fmt.Println(string(output))
+	case "e", "edit":
+		// Open editor for manual editing - need to connect stdin/stdout
+		cmd := exec.Command("git", "commit")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			display.ShowError(fmt.Sprintf("Commit failed: %v", err))
+			return
+		}
+		fmt.Println("✓ Committed successfully!")
+	default:
+		fmt.Println("Commit cancelled.")
+	}
+}
+
+// handleAmendCommand amends the last commit with a new AI-generated message.
+func (app *App) handleAmendCommand(session *InteractiveSession) {
+	if !isGitRepo() {
+		fmt.Println("Not a git repository.")
+		return
+	}
+
+	// Get the last commit info
+	lastMsg, _ := exec.Command("git", "log", "-1", "--pretty=%B").Output()
+	lastDiff, _ := exec.Command("git", "diff", "HEAD~1", "--staged").Output()
+
+	if len(lastDiff) == 0 {
+		lastDiff, _ = exec.Command("git", "show", "--stat", "HEAD").Output()
+	}
+
+	diffStr := string(lastDiff)
+	if len(diffStr) > 8000 {
+		diffStr = diffStr[:8000] + "\n... (truncated)"
+	}
+
+	fmt.Printf("📝 Current commit message:\n%s\n", string(lastMsg))
+	fmt.Println("🤖 Generating improved commit message...")
+
+	prompt := fmt.Sprintf(`Improve this git commit message. Follow conventional commits format. Be specific but brief. Only output the new commit message, nothing else.
+
+Current message: %s
+
+Changes:
+%s`, string(lastMsg), diffStr)
+
+	resp, err := session.client.QueryWithHistory([]api.Message{
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		display.ShowError(fmt.Sprintf("Failed to generate message: %v", err))
+		return
+	}
+
+	newMsg := strings.TrimSpace(resp.GetContent())
+	fmt.Printf("\n📝 New commit message:\n%s\n\n", newMsg)
+
+	fmt.Print("Amend with this message? [y]es / [n]o: ")
+	var response string
+	fmt.Scanln(&response)
+
+	if strings.ToLower(strings.TrimSpace(response)) == "y" {
+		output, err := exec.Command("git", "commit", "--amend", "-m", newMsg).CombinedOutput()
+		if err != nil {
+			display.ShowError(fmt.Sprintf("Amend failed: %v\n%s", err, string(output)))
+			return
+		}
+		fmt.Println("✓ Commit amended successfully!")
+		fmt.Println(string(output))
+	} else {
+		fmt.Println("Amend cancelled.")
+	}
+}
+
+// handlePlanCommand shows or clears the current plan.
+func (app *App) handlePlanCommand(session *InteractiveSession) {
+	if session.currentPlan == nil || len(session.currentPlan.Items) == 0 {
+		fmt.Println("No active plan. The AI will create one when working on complex tasks.")
+		return
+	}
+	display.ShowPlan(session.currentPlan)
+}
+
+// isGitRepo checks if current directory is a git repository.
+func isGitRepo() bool {
+	_, err := exec.Command("git", "rev-parse", "--git-dir").Output()
+	return err == nil
 }

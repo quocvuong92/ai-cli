@@ -13,7 +13,7 @@ import (
 )
 
 // processToolCall dispatches a tool call to the appropriate handler.
-func (app *App) processToolCall(tc api.ToolCall, exec *executor.Executor, ctx context.Context) string {
+func (app *App) processToolCall(tc api.ToolCall, exec *executor.Executor, ctx context.Context, session *InteractiveSession) string {
 	switch tc.Function.Name {
 	case "execute_command":
 		return app.handleExecuteCommand(tc, exec, ctx)
@@ -29,6 +29,8 @@ func (app *App) processToolCall(tc api.ToolCall, exec *executor.Executor, ctx co
 		return app.handleListDirectory(tc)
 	case "delete_file":
 		return app.handleDeleteFile(tc, exec)
+	case "update_plan":
+		return app.handleUpdatePlan(tc, session)
 	default:
 		return fmt.Sprintf("Unknown tool: %s", tc.Function.Name)
 	}
@@ -240,4 +242,38 @@ func (app *App) handleDeleteFile(tc api.ToolCall, exec *executor.Executor) strin
 
 	result := executor.DeleteFile(args.Path)
 	return result.Output
+}
+
+// handleUpdatePlan handles the update_plan tool call for task tracking.
+func (app *App) handleUpdatePlan(tc api.ToolCall, session *InteractiveSession) string {
+	var args struct {
+		Title string `json:"title"`
+		Items []struct {
+			Description string `json:"description"`
+			Status      string `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return fmt.Sprintf("Error parsing arguments: %v", err)
+	}
+
+	// Convert to display.Plan
+	plan := &display.Plan{
+		Title: args.Title,
+		Items: make([]display.PlanItem, len(args.Items)),
+	}
+	for i, item := range args.Items {
+		plan.Items[i] = display.PlanItem{
+			Description: item.Description,
+			Status:      item.Status,
+		}
+	}
+
+	// Store in session
+	session.currentPlan = plan
+
+	// Display the plan
+	display.ShowPlan(plan)
+
+	return fmt.Sprintf("Plan updated: %s (%d items)", args.Title, len(args.Items))
 }

@@ -161,6 +161,44 @@ var DeleteFileTool = Tool{
 	},
 }
 
+// UpdatePlanTool manages a task checklist for complex operations
+var UpdatePlanTool = Tool{
+	Type: "function",
+	Function: Function{
+		Name:        "update_plan",
+		Description: "Create or update a task checklist to track progress on complex multi-step tasks. Use this to show the user what steps are planned and mark them complete as you work. Always use this when working on tasks with 3+ steps.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{
+					"type":        "string",
+					"description": "Title of the plan (e.g., 'Add authentication feature')",
+				},
+				"items": map[string]interface{}{
+					"type":        "array",
+					"description": "List of plan items with their status",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"description": map[string]interface{}{
+								"type":        "string",
+								"description": "Description of the task",
+							},
+							"status": map[string]interface{}{
+								"type":        "string",
+								"enum":        []string{"pending", "in_progress", "completed"},
+								"description": "Current status of the task",
+							},
+						},
+						"required": []string{"description", "status"},
+					},
+				},
+			},
+			"required": []string{"title", "items"},
+		},
+	},
+}
+
 // GetDefaultTools returns the default set of tools available to the AI
 func GetDefaultTools() []Tool {
 	return []Tool{
@@ -171,5 +209,6 @@ func GetDefaultTools() []Tool {
 		SearchFilesTool,
 		ListDirectoryTool,
 		DeleteFileTool,
+		UpdatePlanTool,
 	}
 }

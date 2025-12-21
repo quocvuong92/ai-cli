@@ -458,3 +458,41 @@ func AskFileConfirmation(op, path string) ApprovalChoice {
 		return ApprovalDenied
 	}
 }
+
+// PlanItem represents a single item in a task plan
+type PlanItem struct {
+	Description string
+	Status      string // "pending", "in_progress", "completed"
+}
+
+// Plan represents a task checklist
+type Plan struct {
+	Title string
+	Items []PlanItem
+}
+
+// ShowPlan displays the current plan/checklist with status indicators
+func ShowPlan(plan *Plan) {
+	if plan == nil || len(plan.Items) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n📋 %s\n", plan.Title)
+	for i, item := range plan.Items {
+		var icon string
+		var color string
+		switch item.Status {
+		case "completed":
+			icon = "✓"
+			color = "\033[32m" // green
+		case "in_progress":
+			icon = "→"
+			color = "\033[33m" // yellow
+		default: // pending
+			icon = "○"
+			color = "\033[37m" // gray
+		}
+		fmt.Fprintf(os.Stderr, "  %s%s %d. %s\033[0m\n", color, icon, i+1, item.Description)
+	}
+	fmt.Fprintln(os.Stderr)
+}
