@@ -33,6 +33,7 @@ type InteractiveSession struct {
 	history        *history.History
 	conversationID string
 	interruptCtx   *InterruptibleContext // For graceful Ctrl+C cancellation
+	currentPlan    *display.Plan         // Current task plan/checklist
 }
 
 // InterruptibleContext manages a cancellable context for operations.
@@ -150,6 +151,12 @@ func (s *InteractiveSession) completer(d prompt.Document) ([]prompt.Suggest, ist
 		{Text: "/web", Description: "Web search commands"},
 		{Text: "/help", Description: "Show all available commands"},
 		{Text: "/exit", Description: "Exit interactive mode"},
+
+		// Git commands
+		{Text: "/diff", Description: "Show current git changes"},
+		{Text: "/commit", Description: "AI-generate commit message and commit"},
+		{Text: "/amend", Description: "AI-improve last commit message"},
+		{Text: "/plan", Description: "Show current task plan/checklist"},
 
 		// History commands
 		{Text: "/history", Description: "Show recent conversations"},
@@ -327,14 +334,14 @@ func (s *InteractiveSession) executor(input string) {
 
 	// Web search mode: automatically search for every message
 	if s.app.cfg.WebSearch {
-		s.app.handleWebSearch(input, &s.messages, s.client, s.exec, s.interruptCtx)
+		s.app.handleWebSearch(input, &s.messages, s.client, s.exec, s)
 		return
 	}
 
 	// Regular chat with tool support
 	s.messages = append(s.messages, api.Message{Role: "user", Content: input})
 	fmt.Println()
-	response, err := s.app.sendInteractiveMessageWithTools(s.client, s.exec, &s.messages, s.interruptCtx)
+	response, err := s.app.sendInteractiveMessageWithTools(s.client, s.exec, &s.messages, s.interruptCtx, s)
 	if err != nil {
 		// Check if it was a cancellation
 		if err == context.Canceled {
@@ -444,7 +451,7 @@ func (app *App) sendInteractiveMessage(client api.AIClient, messages []api.Messa
 // It handles the execute_command tool, processing permission checks and user confirmations
 // before executing shell commands. Continues the conversation loop until no more tool
 // calls are requested by the AI.
-func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *executor.Executor, messages *[]api.Message, interruptCtx *InterruptibleContext) (string, error) {
+func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *executor.Executor, messages *[]api.Message, interruptCtx *InterruptibleContext, session *InteractiveSession) (string, error) {
 	// Start interruptible context - Ctrl+C will cancel this operation
 	ctx := interruptCtx.Start()
 	defer interruptCtx.Stop()
@@ -531,7 +538,7 @@ func (app *App) sendInteractiveMessageWithTools(client api.AIClient, exec *execu
 
 			// Process each tool call
 			for _, toolCall := range toolCalls {
-				toolResult := app.processToolCall(toolCall, exec, ctx)
+				toolResult := app.processToolCall(toolCall, exec, ctx, session)
 				*messages = append(*messages, api.Message{
 					Role:       "tool",
 					Content:    toolResult,
