@@ -182,10 +182,41 @@ func (app *App) resumeConversation(session *InteractiveSession, messages *[]api.
 	if msgCount < 0 {
 		msgCount = 0
 	}
-	fmt.Printf("Resumed conversation from %s (%d messages)\n",
+	fmt.Printf("Resumed conversation from %s (%d messages)\n\n",
 		lastConv.UpdatedAt.Format("2006-01-02 15:04"),
 		msgCount,
 	)
+
+	// Display the conversation history
+	for _, msg := range lastConv.Messages {
+		// Skip system messages
+		if msg.Role == "system" {
+			continue
+		}
+
+		// Display user messages
+		if msg.Role == "user" {
+			fmt.Printf("👤 You:\n%s\n\n", msg.Content)
+		}
+
+		// Display assistant messages
+		if msg.Role == "assistant" && msg.Content != "" {
+			fmt.Printf("🤖 Assistant:\n")
+			if app.cfg.Render {
+				display.ShowContentRendered(msg.Content)
+			} else {
+				display.ShowContent(msg.Content)
+			}
+			fmt.Println()
+		}
+
+		// Display tool messages (if any)
+		if msg.Role == "tool" && msg.Content != "" {
+			fmt.Printf("🔧 Tool Result:\n%s\n\n", msg.Content)
+		}
+	}
+
+	fmt.Println("--- End of conversation history ---\n")
 }
 
 // handleModelCommand processes the /model command to show or switch models.
