@@ -10,6 +10,7 @@ A fast, lightweight command-line interface for AI interactions. Supports GitHub 
 - **Multiple AI Providers** - GitHub Copilot (free with Pro) and Azure OpenAI
 - **Web Search** - Tavily, Linkup, and Brave Search integration
 - **Interactive Mode** - Persistent conversations with command execution
+- **File Operations** - Read, write, edit, search files with safety checks
 - **Streaming** - Real-time response output
 - **Smart Permissions** - Three-tier command safety system
 
@@ -123,6 +124,25 @@ Commands are classified by safety level:
 | Dangerous | `rm -rf`, `sudo` | Blocked by default |
 
 Permission options: `[y]es once` / `[s]ession` / `[a]lways` / `[n]o`
+
+### File Operations
+
+In interactive mode, the AI can perform file operations:
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `read_file` | Read file contents (≤512KB) | Auto-approved |
+| `write_file` | Create/overwrite files | Requires confirmation |
+| `edit_file` | Search & replace with diff preview | Requires confirmation |
+| `search_files` | Grep/ripgrep code search | Auto-approved |
+| `list_directory` | List directory contents | Auto-approved |
+| `delete_file` | Delete files | Requires `/allow-dangerous` |
+
+**Safety features:**
+- System paths (`/etc`, `/usr`, `/bin`, etc.) are protected
+- Write operations require explicit user confirmation
+- File size limit (512KB) prevents memory issues
+- Colored diff preview before edits
 
 ## Commands
 

@@ -12,6 +12,8 @@ import (
 
 	"github.com/briandowns/spinner"
 	"github.com/charmbracelet/glamour"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // renderer is the markdown renderer instance
@@ -367,4 +369,92 @@ func TryOpenBrowser(url string) {
 	}
 
 	_ = cmd.Start()
+}
+
+// File operation display functions
+
+// ShowFileOperation displays which file operation is happening
+func ShowFileOperation(op, path string) {
+	icons := map[string]string{
+		"read":   "📖",
+		"write":  "✏️",
+		"edit":   "🔧",
+		"search": "🔍",
+		"list":   "📁",
+		"delete": "🗑️",
+	}
+	icon := icons[op]
+	if icon == "" {
+		icon = "📄"
+	}
+	titleCaser := cases.Title(language.English)
+	fmt.Fprintf(os.Stderr, "%s %s: %s\n", icon, titleCaser.String(op), path)
+}
+
+// ShowDiff displays a colored diff preview
+func ShowDiff(path, diff string) {
+	fmt.Fprintf(os.Stderr, "\n📝 Changes to %s:\n", path)
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "- ") {
+			// Red for removed lines
+			fmt.Fprintf(os.Stderr, "\033[31m%s\033[0m\n", line)
+		} else if strings.HasPrefix(line, "+ ") {
+			// Green for added lines
+			fmt.Fprintf(os.Stderr, "\033[32m%s\033[0m\n", line)
+		} else if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			// Cyan for file headers
+			fmt.Fprintf(os.Stderr, "\033[36m%s\033[0m\n", line)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s\n", line)
+		}
+	}
+}
+
+// ShowFileBlocked displays a message when a file operation is blocked
+func ShowFileBlocked(op, path, reason string) {
+	titleCaser := cases.Title(language.English)
+	fmt.Fprintf(os.Stderr, "🚫 %s blocked: %s\n", titleCaser.String(op), path)
+	fmt.Fprintf(os.Stderr, "Reason: %s\n", reason)
+}
+
+// ShowFileResult displays the result of a file operation
+func ShowFileResult(success bool, output string) {
+	if success {
+		if output != "" {
+			fmt.Println(output)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "%s\n", output)
+	}
+}
+
+// ShowWarning displays a warning message
+func ShowWarning(msg string) {
+	fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg)
+}
+
+// AskFileConfirmation prompts for file operation confirmation
+// Returns: ApprovalChoice indicating user's decision
+func AskFileConfirmation(op, path string) ApprovalChoice {
+	fmt.Printf("\n⚠️  File %s: %s\n", op, path)
+	fmt.Printf("Allow? [y]es / [n]o: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return ApprovalDenied
+	}
+
+	response := strings.TrimSpace(line)
+	if len(response) == 0 {
+		return ApprovalDenied
+	}
+	response = strings.ToLower(string(response[0]))
+
+	switch response {
+	case "y":
+		return ApprovalOnce
+	default:
+		return ApprovalDenied
+	}
 }

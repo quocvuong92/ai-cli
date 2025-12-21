@@ -9,7 +9,8 @@ const (
 	// DefaultAPITimeout is the timeout for AI API requests (streaming can take a while)
 	DefaultAPITimeout = 120 * time.Second
 	// DefaultCommandTimeout is the timeout for shell command execution
-	DefaultCommandTimeout = 30 * time.Second
+	// 5 minutes to support long-running scripts (builds, tests, npm install)
+	DefaultCommandTimeout = 5 * time.Minute
 	// DefaultOAuthTimeout is the timeout for OAuth HTTP requests
 	DefaultOAuthTimeout = 30 * time.Second
 )
