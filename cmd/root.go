@@ -17,7 +17,6 @@ import (
 type App struct {
 	cfg           *config.Config
 	client        api.AIClient
-	verbose       bool
 	listModels    bool
 	searchResults *api.TavilyResponse // Store search results for citations
 }
@@ -54,7 +53,7 @@ Examples:
 		},
 	}
 
-	rootCmd.Flags().BoolVarP(&app.verbose, "verbose", "v", false, "Enable debug mode")
+	rootCmd.Flags().BoolVarP(&app.cfg.Debug, "debug", "d", false, "Enable debug logging (API requests/responses)")
 	rootCmd.Flags().BoolVarP(&app.cfg.Usage, "usage", "u", false, "Show token usage statistics")
 	rootCmd.Flags().BoolVarP(&app.cfg.Stream, "stream", "s", false, "Stream output in real-time")
 	rootCmd.Flags().BoolVarP(&app.cfg.Render, "render", "r", false, "Render markdown with colors and formatting")
@@ -77,7 +76,7 @@ Examples:
 }
 
 func (app *App) run(cmd *cobra.Command, args []string) {
-	if app.verbose {
+	if app.cfg.Debug {
 		log.SetOutput(os.Stderr)
 		log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	} else {

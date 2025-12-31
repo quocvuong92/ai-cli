@@ -10,6 +10,7 @@ import (
 
 	"github.com/quocvuong92/ai-cli/internal/config"
 	"github.com/quocvuong92/ai-cli/internal/constants"
+	"github.com/quocvuong92/ai-cli/internal/logging"
 )
 
 // Message represents a chat message
@@ -116,15 +117,30 @@ func (e *APIError) Error() string {
 type AzureClient struct {
 	httpClient *http.Client
 	config     *config.Config
+	httpLogger *logging.HTTPLogger
 }
 
 // NewAzureClient creates a new Azure OpenAI client
 func NewAzureClient(cfg *config.Config) *AzureClient {
+	transport := http.DefaultTransport
+
+	var httpLogger *logging.HTTPLogger
+	if cfg.Debug {
+		logger := logging.New(logging.Options{
+			Level:  logging.LevelDebug,
+			Format: logging.FormatJSON,
+		})
+		httpLogger = logging.NewHTTPLogger(logger)
+		transport = logging.NewLoggingRoundTripper(http.DefaultTransport, httpLogger, true)
+	}
+
 	return &AzureClient{
 		httpClient: &http.Client{
-			Timeout: constants.DefaultAPITimeout,
+			Timeout:   constants.DefaultAPITimeout,
+			Transport: transport,
 		},
-		config: cfg,
+		config:     cfg,
+		httpLogger: httpLogger,
 	}
 }
 

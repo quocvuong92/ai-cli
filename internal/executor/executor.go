@@ -64,7 +64,7 @@ func (e *Executor) Execute(ctx context.Context, command string) (*ExecutionResul
 }
 
 // GetPermissionManager returns the permission manager
-func (e *Executor) GetPermissionManager() *PermissionManager {
+func (e *Executor) GetPermissionManager() PermissionChecker {
 	return e.permissions
 }
 

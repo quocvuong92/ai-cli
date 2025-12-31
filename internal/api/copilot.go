@@ -12,6 +12,7 @@ import (
 	"github.com/quocvuong92/ai-cli/internal/auth"
 	"github.com/quocvuong92/ai-cli/internal/config"
 	"github.com/quocvuong92/ai-cli/internal/constants"
+	"github.com/quocvuong92/ai-cli/internal/logging"
 )
 
 // CopilotClient is the GitHub Copilot API client
@@ -19,16 +20,31 @@ type CopilotClient struct {
 	httpClient   *http.Client
 	config       *config.Config
 	tokenManager *auth.TokenManager
+	httpLogger   *logging.HTTPLogger
 }
 
 // NewCopilotClient creates a new GitHub Copilot client
 func NewCopilotClient(cfg *config.Config, tokenManager *auth.TokenManager) *CopilotClient {
+	transport := http.DefaultTransport
+
+	var httpLogger *logging.HTTPLogger
+	if cfg.Debug {
+		logger := logging.New(logging.Options{
+			Level:  logging.LevelDebug,
+			Format: logging.FormatJSON,
+		})
+		httpLogger = logging.NewHTTPLogger(logger)
+		transport = logging.NewLoggingRoundTripper(http.DefaultTransport, httpLogger, true)
+	}
+
 	return &CopilotClient{
 		httpClient: &http.Client{
-			Timeout: constants.DefaultAPITimeout,
+			Timeout:   constants.DefaultAPITimeout,
+			Transport: transport,
 		},
 		config:       cfg,
 		tokenManager: tokenManager,
+		httpLogger:   httpLogger,
 	}
 }
 

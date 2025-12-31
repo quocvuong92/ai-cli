@@ -197,6 +197,7 @@ type Config struct {
 	WebSearch   bool
 	Citations   bool // Show citations/sources from web search
 	Interactive bool // Interactive chat mode
+	Debug       bool // Enable debug logging (API requests/responses)
 }
 
 // NewConfig creates a new Config with defaults
